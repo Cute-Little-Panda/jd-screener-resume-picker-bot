@@ -1,0 +1,21 @@
+steps:
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'functions'
+      - 'deploy'
+      - 'jd-screener-resume-picker-bot'
+      - '--gen2'
+      - '--region=us-central1'
+      - '--source=.'
+      - '--runtime=python310'
+      - '--entry-point=handle_chat' # Must match the function name in main.py
+      - '--trigger-http'
+      - '--allow-unauthenticated'
+      # We inject the variables below into the Python environment
+      - '--set-env-vars'
+      - 'GCP_PROJECT_ID=$PROJECT_ID,SHEET_ID=${_SHEET_ID},SHEET_RANGE=Sheet1!A:D'
+
+# These values are now hardcoded as defaults for your build
+substitutions:
+  _SHEET_ID: "10poHE7y8Coin5Bj_bxaUr-VKFe9iM40knFmyH_rzB3s"
