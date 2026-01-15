@@ -18,4 +18,4 @@ steps:
 
 # These values are now hardcoded as defaults for your build
 substitutions:
-  _SHEET_ID: "10poHE7y8Coin5Bj_bxaUr-VKFe9iM40knFmyH_rzB3s"
+  _SHEET_ID: "10poHE7y8Coin5Bj_bxaUr-VKFe9iM40knFmyH_rzB3s" 
