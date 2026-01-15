@@ -17,6 +17,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: Function App
     permissions:
       contents: 'read'
       id-token: 'write'
