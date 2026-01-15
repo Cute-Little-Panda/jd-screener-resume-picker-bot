@@ -34,11 +34,13 @@ jobs:
         uses: 'google-github-actions/deploy-cloud-functions@v2'
         with:
           name: '${{ env.FUNCTION_NAME }}'
+          description: 'Gemini Resume Screener'
           runtime: 'python310'
           region: '${{ env.REGION }}'
           source_dir: './src'
           entry_point: 'handle_chat'
           memory_mb: '512'
+          generation: '2nd' 
           env_vars: |-
             SHEET_ID=${{ env.SHEET_ID }}
             GCP_PROJECT_ID=${{ env.PROJECT_ID }}
