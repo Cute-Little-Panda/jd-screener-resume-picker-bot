@@ -8,24 +8,42 @@ import vertexai
 from vertexai.generative_models import GenerativeModel
 
 # --- CONFIGURATION ---
+# We use defaults to prevent crashes if env vars are missing during build
 SHEET_ID = os.environ.get("SHEET_ID")
-SHEET_RANGE = "Sheet1!A:D"  
+SHEET_RANGE = os.environ.get("SHEET_RANGE", "Sheet1!A:D")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 REGION = "us-central1"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-vertexai.init(project=PROJECT_ID, location=REGION)
-model = GenerativeModel("gemini-1.5-flash-001")
+# Global variables for lazy loading
+model = None
+sheets_service = None
+
+def get_model():
+    """Lazy load Vertex AI to prevent cold-start crashes."""
+    global model
+    if model is None:
+        vertexai.init(project=PROJECT_ID, location=REGION)
+        model = GenerativeModel("gemini-1.5-flash-001")
+    return model
 
 def get_sheets_service():
-    creds, _ = google.auth.default()
-    return build('sheets', 'v4', credentials=creds)
+    """Lazy load Sheets Service."""
+    global sheets_service
+    if sheets_service is None:
+        creds, _ = google.auth.default()
+        sheets_service = build('sheets', 'v4', credentials=creds)
+    return sheets_service
 
 def fetch_resumes_from_sheet(service):
     """Fetches data from Cols A-D."""
     try:
+        if not SHEET_ID:
+            logger.error("SHEET_ID is missing from Environment Variables")
+            return []
+
         sheet = service.spreadsheets()
         result = sheet.values().get(spreadsheetId=SHEET_ID, range=SHEET_RANGE).execute()
         rows = result.get('values', [])
@@ -51,6 +69,8 @@ def fetch_resumes_from_sheet(service):
         return []
 
 def analyze_with_gemini(jd_text, resumes):
+    model_instance = get_model()
+    
     context_str = ""
     for r in resumes:
         status = "[ARCHIVED]" if r['is_archived'] else "[ACTIVE]"
@@ -78,7 +98,7 @@ def analyze_with_gemini(jd_text, resumes):
     }}
     """
     
-    response = model.generate_content(prompt)
+    response = model_instance.generate_content(prompt)
     try:
         clean_json = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(clean_json)
@@ -167,11 +187,11 @@ def handle_chat(request):
                 return "Error: No JD provided.", 400
 
             # Run Logic
-            sheets_service = get_sheets_service()
-            resumes = fetch_resumes_from_sheet(sheets_service)
+            svc = get_sheets_service()
+            resumes = fetch_resumes_from_sheet(svc)
             
             if not resumes:
-                return "Error: No resumes found in Sheet.", 500
+                return "Error: No resumes found in Sheet. (Check Sheet Permissions and Sheet Name)", 500
                 
             result = analyze_with_gemini(jd_text, resumes)
             
@@ -180,7 +200,12 @@ def handle_chat(request):
 
             # Format HTML Result
             top_name = result.get('top_match_name', 'Unknown')
-            top_resume_url = next((r['path'] for r in resumes if r['name'] == top_name), "#")
+            # Safe access to resumes list
+            top_resume_url = "#"
+            for r in resumes:
+                if r['name'] == top_name:
+                    top_resume_url = r['path']
+                    break
             
             bullets_html = ""
             for b in result.get('bullets', []):
