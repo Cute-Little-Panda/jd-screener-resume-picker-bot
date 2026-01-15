@@ -1,19 +1,17 @@
-name: Deploy JD Screener Resume Picker Bot to GCP Cloud Functions
+name: Deploy Resume Screener
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-    paths:
-      - 'src/**'
-      - '.github/workflows/deploy.yaml'
+      - master
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  # The ID of your Drive folder where MD files live
-  RESUME_FOLDER_ID: ${{ secrets.RESUME_FOLDER_ID }} 
+  SHEET_ID: ${{ secrets.SHEET_ID }} 
   REGION: us-central1
-  FUNCTION_NAME: jd-screener-resume-picker-bot
+  FUNCTION_NAME: resume-screener-bot
 
 jobs:
   deploy:
@@ -25,14 +23,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Authenticate to Google Cloud
-      # OPTION A: JSON Key (Simpler for personal projects)
       - id: 'auth'
         uses: 'google-github-actions/auth@v2'
         with:
           credentials_json: '${{ secrets.GCP_SA_KEY }}'
 
-      # Deploy to Cloud Run Functions (Gen 2)
       - id: 'deploy'
         uses: 'google-github-actions/deploy-cloud-functions@v2'
         with:
@@ -41,7 +36,7 @@ jobs:
           region: '${{ env.REGION }}'
           source_dir: './src'
           entry_point: 'handle_chat'
-          memory_mb: '512' # Enough for light text processing
+          memory_mb: '512'
           env_vars: |-
-            RESUME_FOLDER_ID=${{ env.RESUME_FOLDER_ID }}
+            SHEET_ID=${{ env.SHEET_ID }}
             GCP_PROJECT_ID=${{ env.PROJECT_ID }}
