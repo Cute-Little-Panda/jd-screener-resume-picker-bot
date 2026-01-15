@@ -9,7 +9,6 @@ from vertexai.generative_models import GenerativeModel
 
 # --- CONFIGURATION ---
 SHEET_ID = os.environ.get("SHEET_ID")
-# Reading A:D (Name, Content, Status, Path)
 SHEET_RANGE = "Sheet1!A:D"  
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 REGION = "us-central1"
@@ -39,17 +38,12 @@ def fetch_resumes_from_sheet(service):
         resumes = []
         
         for row in rows:
-            # Need at least Name (0) and Content (1)
-            if len(row) < 2:
-                continue
+            if len(row) < 2: continue
             
             name = row[0]
             content = row[1]
-            
-            # Safe parsing for optional columns
             status = row[2] if len(row) > 2 else ""
             path_url = row[3] if len(row) > 3 else "#"
-            
             is_archived = "archived" in status.lower()
 
             resumes.append({
@@ -65,11 +59,9 @@ def fetch_resumes_from_sheet(service):
         return []
 
 def analyze_with_gemini(jd_text, resumes):
-    # Construct context for AI
     context_str = ""
     for r in resumes:
         status = "[ARCHIVED]" if r['is_archived'] else "[ACTIVE]"
-        # We only send text to AI, not the URL
         context_str += f"\n--- RESUME: {r['name']} {status} ---\n{r['content']}\n"
 
     prompt = f"""
@@ -123,13 +115,10 @@ def handle_chat(request):
         if "error" in result:
             return {"text": "Sorry, I couldn't process that analysis."}
 
-        # Match AI result back to Resume URL
         top_name = result.get('top_match_name', '')
         top_resume_url = next((r['path'] for r in resumes if r['name'] == top_name), "#")
 
-        # Format Card
         widgets = [
-            # Link the name to the Drive Path (Col D)
             {"textParagraph": {"text": f"<b>🏆 Match:</b> <a href='{top_resume_url}'>{top_name}</a>"}},
             {"textParagraph": {"text": f"<b>Analysis:</b> {result.get('analysis')}"}},
             {"textParagraph": {"text": f"<b>Why:</b> {result.get('reasoning')}"}},
@@ -144,7 +133,7 @@ def handle_chat(request):
             "cardsV2": [{
                 "cardId": "resumeAnalysis",
                 "card": {
-                    "header": {"title": "Resume Screener"},
+                    "header": {"title": "JD Screener & Resume Picker"}, # UPDATED NAME HERE
                     "sections": [{"widgets": widgets}]
                 }
             }]
