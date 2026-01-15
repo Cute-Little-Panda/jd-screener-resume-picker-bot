@@ -33,13 +33,15 @@ jobs:
       - id: 'deploy'
         uses: 'google-github-actions/deploy-cloud-functions@v2'
         with:
-          name: '${{ env.FUNCTION_NAME }}'
-          description: 'Gemini Resume Screener'
+          # Changed name to avoid conflict with the V1 function
+          name: 'jd-screener-bot-v2' 
+          description: 'Gemini Resume Screener (Gen 2)'
           runtime: 'python310'
           region: '${{ env.REGION }}'
           source_dir: './src'
           entry_point: 'handle_chat'
-          memory_mb: '512'
+          memory_mb: '512Mi' # Gen 2 strict format (Mi)
+          gen2: true
           env_vars: |-
-            SHEET_ID=${{ env.SHEET_ID }}
+            SHEET_ID=${{ vars.SHEET_ID }}
             GCP_PROJECT_ID=${{ env.PROJECT_ID }}
