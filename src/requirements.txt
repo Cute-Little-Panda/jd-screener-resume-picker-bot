@@ -1,0 +1,5 @@
+functions-framework==3.*
+google-cloud-logging
+google-auth
+google-api-python-client
+vertexai
