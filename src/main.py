@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 
 import functions_framework
 import google.auth
@@ -124,12 +125,9 @@ def analyze_with_gemini(jd_text, resumes):
     prompt = PROMPT_TEMPLATE.format(jd_text=jd_text, context=context_str)
 
     response = model_instance.generate_content(prompt)
-    try:
-        clean_json = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_json)
-    except Exception as e:
-        logger.error(f"AI Error: {response.text}")
-        return {"error": "AI parsing failed"}
+
+    logger.info("Response:", response)
+    return response
 
 
 # --- HTML TEMPLATES ---
