@@ -15,12 +15,12 @@ SHEET_ID = os.environ.get("SHEET_ID")
 SHEET_RANGE = os.environ.get("SHEET_RANGE", "Sheet1!A:D")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 REGION = os.environ.get("REGION", "us-central1")
-MODEL_NAME: str = os.environ.get("MODEL_NAME", "gemini-1.5-flash-001")
+MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-1.5-flash-001")
 
-PROMPT_TEMPLATE: str = os.environ.get(
+PROMPT_TEMPLATE = os.environ.get(
     "PROMPT_TEMPLATE",
     """
-    **ROLE:** Expert Technical Recruiter.
+    **ROLE:** Resume Picker based on Job Description.
     **INPUT JD:** {jd_text}
     **RESUME POOL:** {context_str}
 
