@@ -1,10 +1,11 @@
-import os
-import logging
 import json
+import logging
+import os
+
 import functions_framework
 import google.auth
-from googleapiclient.discovery import build
 import vertexai
+from googleapiclient.discovery import build
 from vertexai.generative_models import GenerativeModel
 
 # --- CONFIGURATION ---
@@ -13,6 +14,7 @@ SHEET_ID = os.environ.get("SHEET_ID")
 SHEET_RANGE = os.environ.get("SHEET_RANGE", "Sheet1!A:D")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 REGION = "us-central1"
+MODEL_NAME: str = os.environ.get("MODEL_NAME", "gemini-1.5-flash-001")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,21 +23,24 @@ logger = logging.getLogger(__name__)
 model = None
 sheets_service = None
 
+
 def get_model():
     """Lazy load Vertex AI to prevent cold-start crashes."""
     global model
     if model is None:
         vertexai.init(project=PROJECT_ID, location=REGION)
-        model = GenerativeModel("gemini-1.5-flash-001")
+        model = GenerativeModel(MODEL_NAME)
     return model
+
 
 def get_sheets_service():
     """Lazy load Sheets Service."""
     global sheets_service
     if sheets_service is None:
         creds, _ = google.auth.default()
-        sheets_service = build('sheets', 'v4', credentials=creds)
+        sheets_service = build("sheets", "v4", credentials=creds)
     return sheets_service
+
 
 def fetch_resumes_from_sheet(service):
     """Fetches data from Cols A-D."""
@@ -46,58 +51,72 @@ def fetch_resumes_from_sheet(service):
 
         sheet = service.spreadsheets()
         result = sheet.values().get(spreadsheetId=SHEET_ID, range=SHEET_RANGE).execute()
-        rows = result.get('values', [])
-        
+        rows = result.get("values", [])
+
         resumes = []
         for row in rows:
-            if len(row) < 2: continue
+            if len(row) < 2:
+                continue
             name = row[0]
             content = row[1]
             status = row[2] if len(row) > 2 else ""
             path_url = row[3] if len(row) > 3 else "#"
             is_archived = "archived" in status.lower()
 
-            resumes.append({
-                "name": name, 
-                "content": content, 
-                "is_archived": is_archived,
-                "path": path_url
-            })
+            resumes.append(
+                {
+                    "name": name,
+                    "content": content,
+                    "is_archived": is_archived,
+                    "path": path_url,
+                }
+            )
         return resumes
     except Exception as e:
         logger.error(f"Error reading sheet: {e}")
         return []
 
+
 def analyze_with_gemini(jd_text, resumes):
     model_instance = get_model()
-    
+
     context_str = ""
     for r in resumes:
-        status = "[ARCHIVED]" if r['is_archived'] else "[ACTIVE]"
+        status = "[ARCHIVED]" if r["is_archived"] else "[ACTIVE]"
         context_str += f"\n--- RESUME: {r['name']} {status} ---\n{r['content']}\n"
 
     prompt = f"""
-    **ROLE:** Expert Technical Recruiter.
-    **INPUT JD:** {jd_text}
-    **RESUME POOL:** {context_str}
-    
-    **TASK:**
-    1. Analyze the JD.
-    2. Pick the BEST resume. (Lower priority for 'Archived' unless >90% match).
-    3. Identify GAPS.
-    4. GENERATE 3-5 quantitative bullet points to bridge those gaps.
-    
-    **OUTPUT JSON ONLY:**
-    {{
-      "top_match_name": "Exact Name",
-      "analysis": "Brief analysis",
-      "reasoning": "Reasoning",
-      "bullets": [
-        {{ "section": "Section Name", "text": "Bullet content" }}
-      ]
-    }}
-    """
-    
+        **ROLE:** Expert Technical Recruiter.
+        **INPUT JD:** {jd_text}
+        **RESUME POOL:** {context_str}
+
+        **TASK:**
+        1. Analyze the JD.
+        2. Pick the BEST resume. (Lower priority for 'Archived' unless >90% match).
+        3. Identify GAPS between the best resume and the JD.
+        4. GENERATE 3-5 quantitative, high-impact bullet points to bridge those gaps.
+
+        **CONSTRAINTS:**
+        - Output **MARKDOWN(.md) ONLY**. Do not output JSON.
+        - Ensure the total output length is sufficient to cover the details but remains under 10,000 CHARACTERS.
+
+        **OUTPUT FORMAT:**
+        Please follow this exact Markdown structure:
+
+        # [Exact Name of Candidate]
+
+        ## Analysis
+        [Brief analysis of the candidate's profile against the JD]
+
+        ## Reasoning
+        [Explanation of why this candidate was chosen over others]
+
+        ## Suggested Improvements (Bridging Gaps)
+        * **[Target Section Name]**: [Content of the bullet point]
+        * **[Target Section Name]**: [Content of the bullet point]
+        * **[Target Section Name]**: [Content of the bullet point]
+        """
+
     response = model_instance.generate_content(prompt)
     try:
         clean_json = response.text.replace("```json", "").replace("```", "").strip()
@@ -105,6 +124,7 @@ def analyze_with_gemini(jd_text, resumes):
     except Exception as e:
         logger.error(f"AI Error: {response.text}")
         return {"error": "AI parsing failed"}
+
 
 # --- HTML TEMPLATES ---
 HTML_FORM = """
@@ -164,24 +184,39 @@ HTML_RESULT = """
 </html>
 """
 
+
 @functions_framework.http
 def handle_chat(request):
     """Handles both GET (Form) and POST (Analysis)."""
-    
-    # 1. Serve the Form
+
+    # 1. Define CORS Headers ---
+    # These headers allow your React app (on any domain) to talk to this function.
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Max-Age": "3600",
+    }
+
+    # 2. Handle Pre-flight Request (OPTIONS) ---
+    # Browsers send this first to check if they are allowed to connect.
+    if request.method == "OPTIONS":
+        return ("", 204, headers)
+
+    # 3. Serve the Form
     if request.method == "GET":
         return HTML_FORM
 
-    # 2. Handle the Analysis
+    # 4. Handle the Analysis
     if request.method == "POST":
         try:
             # Handle Form Data (Web) or JSON (API)
-            if request.content_type == 'application/json':
+            if request.content_type == "application/json":
                 data = request.get_json()
-                jd_text = data.get('message', {}).get('text', '')
+                jd_text = data.get("message", {}).get("text", "")
             else:
                 data = request.form
-                jd_text = data.get('jd', '')
+                jd_text = data.get("jd", "")
 
             if not jd_text:
                 return "Error: No JD provided.", 400
@@ -189,34 +224,37 @@ def handle_chat(request):
             # Run Logic
             svc = get_sheets_service()
             resumes = fetch_resumes_from_sheet(svc)
-            
+
             if not resumes:
-                return "Error: No resumes found in Sheet. (Check Sheet Permissions and Sheet Name)", 500
-                
+                return (
+                    "Error: No resumes found in Sheet. (Check Sheet Permissions and Sheet Name)",
+                    500,
+                )
+
             result = analyze_with_gemini(jd_text, resumes)
-            
+
             if "error" in result:
                 return f"AI Error: {result.get('error')}", 500
 
             # Format HTML Result
-            top_name = result.get('top_match_name', 'Unknown')
+            top_name = result.get("top_match_name", "Unknown")
             # Safe access to resumes list
             top_resume_url = "#"
             for r in resumes:
-                if r['name'] == top_name:
-                    top_resume_url = r['path']
+                if r["name"] == top_name:
+                    top_resume_url = r["path"]
                     break
-            
+
             bullets_html = ""
-            for b in result.get('bullets', []):
+            for b in result.get("bullets", []):
                 bullets_html += f"<li><b>{b['section']}:</b> {b['text']}</li>"
 
             return HTML_RESULT.format(
                 name=top_name,
                 url=top_resume_url,
-                analysis=result.get('analysis', ''),
-                reasoning=result.get('reasoning', ''),
-                bullets=bullets_html
+                analysis=result.get("analysis", ""),
+                reasoning=result.get("reasoning", ""),
+                bullets=bullets_html,
             )
 
         except Exception as e:
