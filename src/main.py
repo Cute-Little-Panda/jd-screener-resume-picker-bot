@@ -124,6 +124,8 @@ def analyze_with_gemini(jd_text, resumes):
 
     prompt = PROMPT_TEMPLATE.format(jd_text=jd_text, context=context_str)
 
+    logger.info("Prompt:", prompt)
+
     response = model_instance.generate_content(prompt)
 
     logger.info("Response:", response)
