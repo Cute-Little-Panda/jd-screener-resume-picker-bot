@@ -1,22 +1,21 @@
-import json
 import logging
 import os
-import re
 
 import functions_framework
 import google.auth
 import vertexai
+from flask import jsonify
 from googleapiclient.discovery import build
 from vertexai.generative_models import GenerativeModel
 
 # --- CONFIGURATION ---
-# We use defaults to prevent crashes if env vars are missing during build
 SHEET_ID = os.environ.get("SHEET_ID")
 SHEET_RANGE = os.environ.get("SHEET_RANGE", "Sheet1!A:D")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 REGION = os.environ.get("REGION", "us-central1")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-1.5-flash-001")
+MODEL_NAME = os.environ.get("MODEL_NAME")
 
+# Reverted to your original Markdown prompt
 PROMPT_TEMPLATE = os.environ.get(
     "PROMPT_TEMPLATE",
     """
@@ -31,7 +30,7 @@ PROMPT_TEMPLATE = os.environ.get(
     4. GENERATE 3-5 quantitative, high-impact bullet points to bridge those gaps.
 
     **CONSTRAINTS:**
-    - Output **MARKDOWN(.md) ONLY**. Do not output JSON.
+    - Output **MARKDOWN** ONLY. Do not output JSON.
     - Ensure the total output length is sufficient to cover the details but remains under 10,000 CHARACTERS.
 
     **OUTPUT FORMAT:**
@@ -52,17 +51,14 @@ PROMPT_TEMPLATE = os.environ.get(
     """,
 )
 
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global variables for lazy loading
 model = None
 sheets_service = None
 
 
 def get_model():
-    """Lazy load Vertex AI to prevent cold-start crashes."""
     global model
     if model is None:
         vertexai.init(project=PROJECT_ID, location=REGION)
@@ -71,7 +67,6 @@ def get_model():
 
 
 def get_sheets_service():
-    """Lazy load Sheets Service."""
     global sheets_service
     if sheets_service is None:
         creds, _ = google.auth.default()
@@ -80,7 +75,6 @@ def get_sheets_service():
 
 
 def fetch_resumes_from_sheet(service):
-    """Fetches data from Cols A-D."""
     try:
         if not SHEET_ID:
             logger.error("SHEET_ID is missing from Environment Variables")
@@ -122,70 +116,42 @@ def analyze_with_gemini(jd_text, resumes):
         status = "[ARCHIVED]" if r["is_archived"] else "[ACTIVE]"
         context_str += f"\n--- RESUME: {r['name']}, path_to_resume: {r['path']}, {status} ---\n{r['content']}\n"
 
-    prompt = PROMPT_TEMPLATE.format(jd_text=jd_text, context=context_str)
+    # Fix: Use f-string for logging
+    prompt = PROMPT_TEMPLATE.format(jd_text=jd_text, context_str=context_str)
+    logger.info(f"Prompt sent to AI (Length: {len(prompt)})")
 
-    logger.info("Prompt:", prompt)
+    try:
+        response = model_instance.generate_content(prompt)
+        # FIX: Extract text here. Do not return the object.
+        return response.text
+    except Exception as e:
+        logger.error(f"AI Error: {e}")
+        # Return a string error so the flow continues
+        return f"Error generating content: {str(e)}"
 
-    response = model_instance.generate_content(prompt)
 
-    logger.info("Response:", response)
-    return response
-
-
-# --- HTML TEMPLATES ---
+# --- HTML FOR LOCAL TESTING ---
 HTML_FORM = """
 <!DOCTYPE html>
 <html>
-<head>
-    <title>JD Screener</title>
-    <style>
-        body { font-family: sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; }
-        textarea { width: 100%; height: 200px; margin-bottom: 20px; padding: 10px; }
-        button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; font-size: 16px; }
-        button:hover { background: #0056b3; }
-        h2 { border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        .spinner { display: none; color: #666; }
-    </style>
-</head>
 <body>
-    <h1>📄 JD Screener & Resume Picker</h1>
-    <form method="POST" onsubmit="document.getElementById('spin').style.display='block'">
-        <label><b>Paste Job Description:</b></label><br>
-        <textarea name="jd" required placeholder="Paste JD here..."></textarea><br>
-        <button type="submit">Analyze Resumes</button>
-        <span id="spin" class="spinner">Processing (this takes ~10s)...</span>
+    <h1>JD Screener (Markdown Mode)</h1>
+    <form method="POST">
+        <textarea name="jd" style="width:100%; height:150px;" placeholder="Paste JD..."></textarea><br>
+        <button type="submit">Analyze</button>
     </form>
 </body>
 </html>
 """
 
-HTML_RESULT = """
+HTML_RAW_OUTPUT = """
 <!DOCTYPE html>
 <html>
-<head>
-    <title>Analysis Result</title>
-    <style>
-        body { font-family: sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6; }
-        .card { border: 1px solid #ddd; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .winner { color: #2e7d32; font-weight: bold; font-size: 1.2em; }
-        a { color: #007bff; text-decoration: none; }
-        ul { background: #f9f9f9; padding: 20px 40px; border-radius: 5px; }
-        .back-btn { display: inline-block; margin-top: 20px; color: #666; }
-    </style>
-</head>
 <body>
-    <h1>✅ Analysis Complete</h1>
-    <div class="card">
-        <p><b>🏆 Top Match:</b> <a href="{url}" target="_blank" class="winner">{name}</a></p>
-        <p><b>Analysis:</b> {analysis}</p>
-        <p><b>Why it won:</b> {reasoning}</p>
-        <hr>
-        <h3>Suggested Improvements:</h3>
-        <ul>
-            {bullets}
-        </ul>
-    </div>
-    <a href="/" class="back-btn">← Scan Another JD</a>
+    <h1>Markdown Result</h1>
+    <p><i>Copy this or render it in your other app.</i></p>
+    <textarea style="width:100%; height:500px;">{markdown}</textarea>
+    <br><a href="/">Back</a>
 </body>
 </html>
 """
@@ -193,33 +159,26 @@ HTML_RESULT = """
 
 @functions_framework.http
 def handle_chat(request):
-    """Handles both GET (Form) and POST (Analysis)."""
-
-    # 1. Define CORS Headers ---
-    # These headers allow your React app (on any domain) to talk to this function.
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
-        "Access-Control-Max-Age": "3600",
     }
 
-    # 2. Handle Pre-flight Request (OPTIONS) ---
-    # Browsers send this first to check if they are allowed to connect.
     if request.method == "OPTIONS":
         return ("", 204, headers)
 
-    # 3. Serve the Form
     if request.method == "GET":
         return HTML_FORM
 
-    # 4. Handle the Analysis
     if request.method == "POST":
         try:
-            # Handle Form Data (Web) or JSON (API)
-            if request.content_type == "application/json":
+            # Detect if this is an API call (JSON) or Browser Form
+            is_json_request = request.content_type == "application/json"
+
+            if is_json_request:
                 data = request.get_json()
-                jd_text = data.get("message", {}).get("text", "")
+                jd_text = data.get("message", {}).get("text", "") or data.get("jd", "")
             else:
                 data = request.form
                 jd_text = data.get("jd", "")
@@ -227,42 +186,23 @@ def handle_chat(request):
             if not jd_text:
                 return "Error: No JD provided.", 400
 
-            # Run Logic
             svc = get_sheets_service()
             resumes = fetch_resumes_from_sheet(svc)
 
             if not resumes:
-                return (
-                    "Error: No resumes found in Sheet. (Check Sheet Permissions and Sheet Name)",
-                    500,
-                )
+                return "Error: No resumes found in Sheet.", 500
 
-            result = analyze_with_gemini(jd_text, resumes)
+            # Get the RAW MARKDOWN string
+            markdown_result = analyze_with_gemini(jd_text, resumes)
 
-            if "error" in result:
-                return f"AI Error: {result.get('error')}", 500
-
-            # Format HTML Result
-            top_name = result.get("top_match_name", "Unknown")
-            # Safe access to resumes list
-            top_resume_url = "#"
-            for r in resumes:
-                if r["name"] == top_name:
-                    top_resume_url = r["path"]
-                    break
-
-            bullets_html = ""
-            for b in result.get("bullets", []):
-                bullets_html += f"<li><b>{b['section']}:</b> {b['text']}</li>"
-
-            return HTML_RESULT.format(
-                name=top_name,
-                url=top_resume_url,
-                analysis=result.get("analysis", ""),
-                reasoning=result.get("reasoning", ""),
-                bullets=bullets_html,
-            )
+            # Return based on caller type
+            if is_json_request:
+                # Return JSON payload for your external site
+                return (jsonify({"markdown": markdown_result}), 200, headers)
+            else:
+                # Return HTML text box for local debugging
+                return HTML_RAW_OUTPUT.format(markdown=markdown_result)
 
         except Exception as e:
-            logger.error(e)
+            logger.exception("System Error")
             return f"System Error: {str(e)}", 500
