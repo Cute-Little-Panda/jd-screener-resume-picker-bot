@@ -159,50 +159,69 @@ HTML_RAW_OUTPUT = """
 
 @functions_framework.http
 def handle_chat(request):
+    # 1. Define Headers globally for this request
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
     }
 
+    # 2. Handle Pre-flight (OPTIONS)
     if request.method == "OPTIONS":
         return ("", 204, headers)
 
+    # 3. Handle GET (Browser Form)
     if request.method == "GET":
-        return HTML_FORM
+        # Browsers don't need CORS for direct navigation, but it doesn't hurt
+        return (HTML_FORM, 200)
 
+    # 4. Handle POST (The Analysis)
     if request.method == "POST":
         try:
-            # Detect if this is an API call (JSON) or Browser Form
             is_json_request = request.content_type == "application/json"
 
             if is_json_request:
-                data = request.get_json()
-                jd_text = data.get("message", {}).get("text", "") or data.get("jd", "")
+                data = (
+                    request.get_json(silent=True) or {}
+                )  # silent=True prevents crash on empty body
+                # Try multiple keys in case payload format varies
+                jd_text = (
+                    data.get("message", {}).get("text", "")
+                    or data.get("jd", "")
+                    or data.get("text", "")
+                )
             else:
                 data = request.form
                 jd_text = data.get("jd", "")
 
+            # --- ERROR PATH 1: Missing JD ---
             if not jd_text:
-                return "Error: No JD provided.", 400
+                # FIX: Must return headers even on error!
+                return (
+                    "Error: No JD provided. Check your JSON body keys.",
+                    400,
+                    headers,
+                )
 
             svc = get_sheets_service()
             resumes = fetch_resumes_from_sheet(svc)
 
+            # --- ERROR PATH 2: No Resumes ---
             if not resumes:
-                return "Error: No resumes found in Sheet.", 500
+                # FIX: Must return headers even on error!
+                return ("Error: No resumes found in Sheet.", 500, headers)
 
             # Get the RAW MARKDOWN string
             markdown_result = analyze_with_gemini(jd_text, resumes)
 
-            # Return based on caller type
+            # --- SUCCESS PATH ---
             if is_json_request:
-                # Return JSON payload for your external site
                 return (jsonify({"markdown": markdown_result}), 200, headers)
             else:
-                # Return HTML text box for local debugging
-                return HTML_RAW_OUTPUT.format(markdown=markdown_result)
+                return (HTML_RAW_OUTPUT.format(markdown=markdown_result), 200, headers)
 
         except Exception as e:
             logger.exception("System Error")
-            return f"System Error: {str(e)}", 500
+            # --- ERROR PATH 3: Exception ---
+            # FIX: Must return headers even on crash!
+            return (f"System Error: {str(e)}", 500, headers)
