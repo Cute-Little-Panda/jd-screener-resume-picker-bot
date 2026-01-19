@@ -50,6 +50,8 @@ jobs:
           source_dir: "./src"
           entry_point: "handle_chat"
           memory_mb: "512Mi"
+          min_instances: 1
+          max_instances: 1
           env_vars: |-
             SHEET_ID=${{ vars.SHEET_ID }}
             GCP_PROJECT_ID=${{ env.PROJECT_ID }}
