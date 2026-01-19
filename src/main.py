@@ -13,7 +13,7 @@ SHEET_ID = os.environ.get("SHEET_ID")
 SHEET_RANGE = os.environ.get("SHEET_RANGE", "Sheet1!A:D")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 REGION = os.environ.get("REGION", "us-central1")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-1.5-flash-001")
+MODEL_NAME = os.environ.get("MODEL_NAME")
 
 # FIX: Hardcoded prompt to prevent Environment Variable truncation
 PROMPT_TEMPLATE = """
