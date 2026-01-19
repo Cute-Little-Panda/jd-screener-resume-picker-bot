@@ -1,5 +1,6 @@
 functions-framework==3.*
-google-cloud-logging
+flask==3.*
+firebase-admin
+google-cloud-aiplatform
 google-auth
 google-api-python-client
-vertexai
