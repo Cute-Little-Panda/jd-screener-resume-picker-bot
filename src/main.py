@@ -13,43 +13,40 @@ SHEET_ID = os.environ.get("SHEET_ID")
 SHEET_RANGE = os.environ.get("SHEET_RANGE", "Sheet1!A:D")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 REGION = os.environ.get("REGION", "us-central1")
-MODEL_NAME = os.environ.get("MODEL_NAME")
+MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-1.5-flash-001")
 
-# Reverted to your original Markdown prompt
-PROMPT_TEMPLATE = os.environ.get(
-    "PROMPT_TEMPLATE",
-    """
-    **ROLE:** Resume Picker based on Job Description.
-    **INPUT JD:** {jd_text}
-    **RESUME POOL:** {context_str}
+# FIX: Hardcoded prompt to prevent Environment Variable truncation
+PROMPT_TEMPLATE = """
+**ROLE:** Resume Picker based on Job Description.
+**INPUT JD:** {jd_text}
+**RESUME POOL:** {context_str}
 
-    **TASK:**
-    1. Analyze the JD.
-    2. Pick the BEST resume. (Lower priority for 'Archived' unless >90% match).
-    3. Identify GAPS between the best resume and the JD.
-    4. GENERATE 3-5 quantitative, high-impact bullet points to bridge those gaps.
+**TASK:**
+1. Analyze the JD.
+2. Pick the BEST resume. (Lower priority for 'Archived' unless >90% match).
+3. Identify GAPS between the best resume and the JD.
+4. GENERATE 3-5 quantitative, high-impact bullet points to bridge those gaps.
 
-    **CONSTRAINTS:**
-    - Output **MARKDOWN** ONLY. Do not output JSON.
-    - Ensure the total output length is sufficient to cover the details but remains under 10,000 CHARACTERS.
+**CONSTRAINTS:**
+- Output **MARKDOWN** ONLY. Do not output JSON.
+- Ensure the total output length is sufficient to cover the details but remains under 10,000 CHARACTERS.
 
-    **OUTPUT FORMAT:**
-    Please follow this exact Markdown structure:
+**OUTPUT FORMAT:**
+Please follow this exact Markdown structure:
 
-    # [Exact Name and Path of Best Resume]
+# [Exact Name and Path of Best Resume]
 
-    ## Analysis
-    [Brief analysis of the resume's profile against the JD]
+## Analysis
+[Brief analysis of the resume's profile against the JD]
 
-    ## Reasoning
-    [Explanation of why this resume was chosen over others]
+## Reasoning
+[Explanation of why this resume was chosen over others]
 
-    ## Suggested Improvements (Bridging Gaps)
-    * **[Target Section Name]**: [Content of the bullet point]
-    * **[Target Section Name]**: [Content of the bullet point]
-    * **[Target Section Name]**: [Content of the bullet point]
-    """,
-)
+## Suggested Improvements (Bridging Gaps)
+* **[Target Section Name]**: [Content of the bullet point]
+* **[Target Section Name]**: [Content of the bullet point]
+* **[Target Section Name]**: [Content of the bullet point]
+"""
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -116,26 +113,23 @@ def analyze_with_gemini(jd_text, resumes):
         status = "[ARCHIVED]" if r["is_archived"] else "[ACTIVE]"
         context_str += f"\n--- RESUME: {r['name']}, path_to_resume: {r['path']}, {status} ---\n{r['content']}\n"
 
-    # Fix: Use f-string for logging
     prompt = PROMPT_TEMPLATE.format(jd_text=jd_text, context_str=context_str)
     logger.info(f"Prompt sent to AI (Length: {len(prompt)})")
 
     try:
         response = model_instance.generate_content(prompt)
-        # FIX: Extract text here. Do not return the object.
         return response.text
     except Exception as e:
         logger.error(f"AI Error: {e}")
-        # Return a string error so the flow continues
         return f"Error generating content: {str(e)}"
 
 
-# --- HTML FOR LOCAL TESTING ---
+# --- HTML TEMPLATES ---
 HTML_FORM = """
 <!DOCTYPE html>
 <html>
 <body>
-    <h1>JD Screener (Markdown Mode)</h1>
+    <h1>JD Screener</h1>
     <form method="POST">
         <textarea name="jd" style="width:100%; height:150px;" placeholder="Paste JD..."></textarea><br>
         <button type="submit">Analyze</button>
@@ -149,7 +143,6 @@ HTML_RAW_OUTPUT = """
 <html>
 <body>
     <h1>Markdown Result</h1>
-    <p><i>Copy this or render it in your other app.</i></p>
     <textarea style="width:100%; height:500px;">{markdown}</textarea>
     <br><a href="/">Back</a>
 </body>
@@ -159,62 +152,40 @@ HTML_RAW_OUTPUT = """
 
 @functions_framework.http
 def handle_chat(request):
-    # 1. Define Headers globally for this request
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
     }
 
-    # 2. Handle Pre-flight (OPTIONS)
     if request.method == "OPTIONS":
         return ("", 204, headers)
 
-    # 3. Handle GET (Browser Form)
     if request.method == "GET":
-        # Browsers don't need CORS for direct navigation, but it doesn't hurt
         return (HTML_FORM, 200)
 
-    # 4. Handle POST (The Analysis)
     if request.method == "POST":
         try:
             is_json_request = request.content_type == "application/json"
 
             if is_json_request:
-                data = (
-                    request.get_json(silent=True) or {}
-                )  # silent=True prevents crash on empty body
-                # Try multiple keys in case payload format varies
-                jd_text = (
-                    data.get("message", {}).get("text", "")
-                    or data.get("jd", "")
-                    or data.get("text", "")
-                )
+                data = request.get_json(silent=True) or {}
+                jd_text = data.get("message", {}).get("text", "") or data.get("jd", "")
             else:
                 data = request.form
                 jd_text = data.get("jd", "")
 
-            # --- ERROR PATH 1: Missing JD ---
             if not jd_text:
-                # FIX: Must return headers even on error!
-                return (
-                    "Error: No JD provided. Check your JSON body keys.",
-                    400,
-                    headers,
-                )
+                return ("Error: No JD provided.", 400, headers)
 
             svc = get_sheets_service()
             resumes = fetch_resumes_from_sheet(svc)
 
-            # --- ERROR PATH 2: No Resumes ---
             if not resumes:
-                # FIX: Must return headers even on error!
                 return ("Error: No resumes found in Sheet.", 500, headers)
 
-            # Get the RAW MARKDOWN string
             markdown_result = analyze_with_gemini(jd_text, resumes)
 
-            # --- SUCCESS PATH ---
             if is_json_request:
                 return (jsonify({"markdown": markdown_result}), 200, headers)
             else:
@@ -222,6 +193,4 @@ def handle_chat(request):
 
         except Exception as e:
             logger.exception("System Error")
-            # --- ERROR PATH 3: Exception ---
-            # FIX: Must return headers even on crash!
             return (f"System Error: {str(e)}", 500, headers)
