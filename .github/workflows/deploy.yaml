@@ -7,13 +7,6 @@ on:
       - main
       - master
 
-# --- CONCURRENCY SETTING ---
-# This ensures that if you push a new change while a deployment is running,
-# the old deployment is cancelled immediately.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   SHEET_ID: ${{ vars.SHEET_ID }}
