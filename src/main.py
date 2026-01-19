@@ -1,12 +1,22 @@
+import json
 import logging
 import os
 
+# --- NEW: Firebase Imports ---
+import firebase_admin
 import functions_framework
 import google.auth
 import vertexai
+from firebase_admin import auth
 from flask import jsonify
 from googleapiclient.discovery import build
 from vertexai.generative_models import GenerativeModel
+
+# Initialize Firebase Admin (Safe for Cloud Run hot-reloads)
+try:
+    firebase_admin.get_app()
+except ValueError:
+    firebase_admin.initialize_app()
 
 # --- CONFIGURATION ---
 SHEET_ID = os.environ.get("SHEET_ID")
@@ -15,7 +25,6 @@ PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 REGION = os.environ.get("REGION")
 MODEL_NAME = os.environ.get("MODEL_NAME")
 
-# FIX: Hardcoded prompt to prevent Environment Variable truncation
 PROMPT_TEMPLATE = """
 **ROLE:** Resume Picker based on Job Description.
 **INPUT JD:** {jd_text}
@@ -71,6 +80,28 @@ def get_sheets_service():
     return sheets_service
 
 
+def verify_firebase_token(request):
+    """
+    Decodes the Firebase ID Token from the Authorization header.
+    Returns the user dictionary if valid, None if invalid.
+    """
+    auth_header = request.headers.get("Authorization")
+
+    if not auth_header or not auth_header.startswith("Bearer "):
+        logger.warning("Auth: Missing or invalid Bearer header")
+        return None
+
+    token = auth_header.split("Bearer ")[1]
+
+    try:
+        # verifying the token verifies signature, expiration, and project matching
+        decoded_token = auth.verify_id_token(token)
+        return decoded_token
+    except Exception as e:
+        logger.warning(f"Auth: Token verification failed: {e}")
+        return None
+
+
 def fetch_resumes_from_sheet(service):
     try:
         if not SHEET_ID:
@@ -114,7 +145,6 @@ def analyze_with_gemini(jd_text, resumes):
         context_str += f"\n--- RESUME: {r['name']}, path_to_resume: {r['path']}, {status} ---\n{r['content']}\n"
 
     prompt = PROMPT_TEMPLATE.format(jd_text=jd_text, context_str=context_str)
-    logger.info(f"Prompt sent to AI (Length: {len(prompt)})")
 
     try:
         response = model_instance.generate_content(prompt)
@@ -130,6 +160,7 @@ HTML_FORM = """
 <html>
 <body>
     <h1>JD Screener</h1>
+    <p><i>Note: API now requires Authentication. This form may not work without a token.</i></p>
     <form method="POST">
         <textarea name="jd" style="width:100%; height:150px;" placeholder="Paste JD..."></textarea><br>
         <button type="submit">Analyze</button>
@@ -152,10 +183,11 @@ HTML_RAW_OUTPUT = """
 
 @functions_framework.http
 def handle_chat(request):
+    # 1. Update CORS to accept Authorization header
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",  # <--- Added Authorization
     }
 
     if request.method == "OPTIONS":
@@ -166,6 +198,20 @@ def handle_chat(request):
 
     if request.method == "POST":
         try:
+            # 2. Authentication Check (Firebase)
+            user = verify_firebase_token(request)
+            if not user:
+                return (
+                    jsonify(
+                        {"error": "Unauthorized: Invalid or missing Firebase Token"}
+                    ),
+                    401,
+                    headers,
+                )
+
+            logger.info(f"Processing request for user: {user.get('email')}")
+
+            # 3. Process Request
             is_json_request = request.content_type == "application/json"
 
             if is_json_request:
@@ -183,6 +229,8 @@ def handle_chat(request):
 
             if not resumes:
                 return ("Error: No resumes found in Sheet.", 500, headers)
+
+            logger.info(f"{len(resumes)} Resumes fetched.")
 
             markdown_result = analyze_with_gemini(jd_text, resumes)
 
