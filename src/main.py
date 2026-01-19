@@ -13,8 +13,44 @@ from vertexai.generative_models import GenerativeModel
 SHEET_ID = os.environ.get("SHEET_ID")
 SHEET_RANGE = os.environ.get("SHEET_RANGE", "Sheet1!A:D")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
-REGION = "us-central1"
+REGION = os.environ.get("REGION", "us-central1")
 MODEL_NAME: str = os.environ.get("MODEL_NAME", "gemini-1.5-flash-001")
+
+PROMPT_TEMPLATE: str = os.environ.get(
+    "PROMPT_TEMPLATE",
+    """
+    **ROLE:** Expert Technical Recruiter.
+    **INPUT JD:** {jd_text}
+    **RESUME POOL:** {context_str}
+
+    **TASK:**
+    1. Analyze the JD.
+    2. Pick the BEST resume. (Lower priority for 'Archived' unless >90% match).
+    3. Identify GAPS between the best resume and the JD.
+    4. GENERATE 3-5 quantitative, high-impact bullet points to bridge those gaps.
+
+    **CONSTRAINTS:**
+    - Output **MARKDOWN(.md) ONLY**. Do not output JSON.
+    - Ensure the total output length is sufficient to cover the details but remains under 10,000 CHARACTERS.
+
+    **OUTPUT FORMAT:**
+    Please follow this exact Markdown structure:
+
+    # [Exact Name and Path of Best Resume]
+
+    ## Analysis
+    [Brief analysis of the resume's profile against the JD]
+
+    ## Reasoning
+    [Explanation of why this resume was chosen over others]
+
+    ## Suggested Improvements (Bridging Gaps)
+    * **[Target Section Name]**: [Content of the bullet point]
+    * **[Target Section Name]**: [Content of the bullet point]
+    * **[Target Section Name]**: [Content of the bullet point]
+    """,
+)
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -83,39 +119,9 @@ def analyze_with_gemini(jd_text, resumes):
     context_str = ""
     for r in resumes:
         status = "[ARCHIVED]" if r["is_archived"] else "[ACTIVE]"
-        context_str += f"\n--- RESUME: {r['name']} {status} ---\n{r['content']}\n"
+        context_str += f"\n--- RESUME: {r['name']}, path_to_resume: {r['path']}, {status} ---\n{r['content']}\n"
 
-    prompt = f"""
-        **ROLE:** Expert Technical Recruiter.
-        **INPUT JD:** {jd_text}
-        **RESUME POOL:** {context_str}
-
-        **TASK:**
-        1. Analyze the JD.
-        2. Pick the BEST resume. (Lower priority for 'Archived' unless >90% match).
-        3. Identify GAPS between the best resume and the JD.
-        4. GENERATE 3-5 quantitative, high-impact bullet points to bridge those gaps.
-
-        **CONSTRAINTS:**
-        - Output **MARKDOWN(.md) ONLY**. Do not output JSON.
-        - Ensure the total output length is sufficient to cover the details but remains under 10,000 CHARACTERS.
-
-        **OUTPUT FORMAT:**
-        Please follow this exact Markdown structure:
-
-        # [Exact Name of Candidate]
-
-        ## Analysis
-        [Brief analysis of the candidate's profile against the JD]
-
-        ## Reasoning
-        [Explanation of why this candidate was chosen over others]
-
-        ## Suggested Improvements (Bridging Gaps)
-        * **[Target Section Name]**: [Content of the bullet point]
-        * **[Target Section Name]**: [Content of the bullet point]
-        * **[Target Section Name]**: [Content of the bullet point]
-        """
+    prompt = PROMPT_TEMPLATE.format(jd_text=jd_text, context=context_str)
 
     response = model_instance.generate_content(prompt)
     try:

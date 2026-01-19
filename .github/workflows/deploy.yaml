@@ -9,39 +9,43 @@ on:
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  SHEET_ID: ${{ vars.SHEET_ID }} 
-  REGION: us-central1
+  SHEET_ID: ${{ vars.SHEET_ID }}
+  REGION: ${{ vars.REGION }}
   # This sets the actual Cloud Run Service Name
   FUNCTION_NAME: jd-screener-resume-picker-bot
+  MODEL_NAME: ${{ vars.MODEL_NAME }}
+  PROMPT_TEMPLATE: ${{ vars.PROMPT_TEMPLATE }}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: Function App
     permissions:
-      contents: 'read'
-      id-token: 'write'
+      contents: "read"
+      id-token: "write"
 
     steps:
       - uses: actions/checkout@v4
 
-      - id: 'auth'
-        uses: 'google-github-actions/auth@v2'
+      - id: "auth"
+        uses: "google-github-actions/auth@v2"
         with:
-          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+          credentials_json: "${{ secrets.GCP_SA_KEY }}"
 
-      - id: 'deploy'
-        uses: 'google-github-actions/deploy-cloud-functions@v2'
+      - id: "deploy"
+        uses: "google-github-actions/deploy-cloud-functions@v2"
         with:
           # Changed name to avoid conflict with the V1 function
-          name: 'jd-screener-bot-v2' 
-          description: 'Gemini Resume Screener (Gen 2)'
-          runtime: 'python310'
-          region: '${{ env.REGION }}'
-          source_dir: './src'
-          entry_point: 'handle_chat'
-          memory_mb: '512Mi' # Gen 2 strict format (Mi)
+          name: "jd-screener-bot-v2"
+          description: "Gemini Resume Screener (Gen 2)"
+          runtime: "python310"
+          region: "${{ env.REGION }}"
+          source_dir: "./src"
+          entry_point: "handle_chat"
+          memory_mb: "512Mi" # Gen 2 strict format (Mi)
           gen2: true
           env_vars: |-
             SHEET_ID=${{ vars.SHEET_ID }}
             GCP_PROJECT_ID=${{ env.PROJECT_ID }}
+            MODEL_NAME=${{ vars.MODEL_NAME }}
+            PROMPT_TEMPLATE=${{ vars.PROMPT_TEMPLATE }}
