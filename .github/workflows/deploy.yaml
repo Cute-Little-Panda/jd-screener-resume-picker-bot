@@ -7,14 +7,21 @@ on:
       - main
       - master
 
+# --- CONCURRENCY SETTING ---
+# This ensures that if you push a new change while a deployment is running,
+# the old deployment is cancelled immediately.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   SHEET_ID: ${{ vars.SHEET_ID }}
   REGION: ${{ vars.REGION }}
-  # This sets the actual Cloud Run Service Name
   FUNCTION_NAME: jd-screener-resume-picker-bot
   MODEL_NAME: ${{ vars.MODEL_NAME }}
-  PROMPT_TEMPLATE: ${{ vars.PROMPT_TEMPLATE }}
+  # Removed PROMPT_TEMPLATE here to prevent truncation bugs.
+  # Rely on the hardcoded Python variable instead.
 
 jobs:
   deploy:
@@ -42,10 +49,8 @@ jobs:
           region: "${{ env.REGION }}"
           source_dir: "./src"
           entry_point: "handle_chat"
-          memory_mb: "512Mi" # Gen 2 strict format (Mi)
-          gen2: true
+          memory_mb: "512Mi"
           env_vars: |-
             SHEET_ID=${{ vars.SHEET_ID }}
             GCP_PROJECT_ID=${{ env.PROJECT_ID }}
             MODEL_NAME=${{ vars.MODEL_NAME }}
-            PROMPT_TEMPLATE=${{ vars.PROMPT_TEMPLATE }}
