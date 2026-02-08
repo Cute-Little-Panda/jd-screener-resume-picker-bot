@@ -16,9 +16,28 @@ from vertexai.generative_models import (
     GenerativeModel,
     Tool,
     ToolConfig,
-    GoogleSearchRetrieval,
-    CodeExecution,
 )
+
+# 1. Dynamically find CodeExecution
+try:
+    from vertexai.generative_models import CodeExecution
+except ImportError:
+    try:
+        from vertexai.preview.generative_models import CodeExecution
+    except ImportError:
+        # Fallback for very old versions (rare)
+        CodeExecution = None 
+
+# 2. Dynamically find GoogleSearchRetrieval
+try:
+    from vertexai.generative_models import GoogleSearchRetrieval
+except ImportError:
+    try:
+        # Try the preview grounding module
+        from vertexai.preview.generative_models import grounding
+        GoogleSearchRetrieval = grounding.GoogleSearchRetrieval
+    except ImportError:
+        GoogleSearchRetrieval = None
 
 # Initialize Firebase Admin
 try:
