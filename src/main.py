@@ -15,11 +15,12 @@ from googleapiclient.discovery import build
 from vertexai.generative_models import (
     GenerativeModel,
     Tool,
-    CodeExecution,
     ToolConfig,
 )
-
-from vertexai.preview.generative_models import grounding
+from vertexai.preview.generative_models import (
+    grounding,
+    CodeExecution,
+)
 
 # Initialize Firebase Admin
 try:
