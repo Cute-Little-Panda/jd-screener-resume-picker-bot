@@ -105,41 +105,20 @@ model = None
 sheets_service = None
 
 def initialize_genai():
-    """Initialize GenAI with Cloud credentials"""
+    """Initialize GenAI with API Key"""
     try:
-        # Get default credentials with explicit scopes
-        credentials, detected_project = google.auth.default(
-            scopes=[
-                'https://www.googleapis.com/auth/cloud-platform',
-                'https://www.googleapis.com/auth/generative-language.retriever'
-            ]
-        )
+        # Get API key from environment
+        api_key = os.environ.get("GENAI_API_KEY")
         
-        logger.info(f"Credentials type: {type(credentials).__name__}")
-        logger.info(f"Detected project: {detected_project}")
+        if not api_key:
+            logger.error("GENAI_API_KEY environment variable not set")
+            return False
         
-        # Use explicit project
-        project_to_use = PROJECT_ID or detected_project
+        # Configure genai with API key
+        genai.configure(api_key=api_key)
         
-        if not project_to_use:
-            raise ValueError("No project ID found. Set GCP_PROJECT_ID environment variable.")
-        
-        # Try to get service account email for logging
-        if hasattr(credentials, 'service_account_email'):
-            logger.info(f"Service Account: {credentials.service_account_email}")
-        
-        # Configure genai with explicit parameters
-        genai.configure(
-            credentials=credentials,
-            project=project_to_use,
-            location=REGION,
-            api_endpoint=f"{REGION}-aiplatform.googleapis.com"
-        )
-        
-        logger.info(f"✓ GenAI configured successfully")
-        logger.info(f"  Project: {project_to_use}")
-        logger.info(f"  Region: {REGION}")
-        logger.info(f"  Endpoint: {REGION}-aiplatform.googleapis.com")
+        logger.info(f"✓ GenAI configured successfully with API Key")
+        logger.info(f"  Model: {MODEL_NAME}")
         
         return True
     except Exception as e:
