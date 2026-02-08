@@ -17,7 +17,7 @@ env:
   REGION: ${{ vars.REGION }}
   FUNCTION_NAME: jd-screener-resume-picker-bot
   MODEL_NAME: ${{ vars.MODEL_NAME }}
-  SERVICE_ACCOUNT: ${{ vars.SERVICE_ACCOUNT }}
+  SERVICE_ACCOUNT: ${{ secrets.SERVICE_ACCOUNT }}
 
 jobs:
   deploy:
