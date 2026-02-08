@@ -44,7 +44,7 @@ jobs:
           region: "${{ env.REGION }}"
           source_dir: "./src"
           entry_point: "handle_chat"
-          memory_mb: "512Mi"
+          memory_mb: 512
           min_instances: 1
           max_instances: 1
           service_account: "${{ env.SERVICE_ACCOUNT }}"

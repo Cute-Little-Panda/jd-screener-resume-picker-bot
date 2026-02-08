@@ -107,20 +107,16 @@ sheets_service = None
 def initialize_genai():
     """Initialize GenAI with service account credentials and proper scopes"""
     try:
-        # Get default credentials - these come from the service account in Cloud Functions
-        credentials, detected_project = google.auth.default()
-        
-        # Ensure credentials have the right scopes
         from google.auth.transport.requests import Request
         
-        if hasattr(credentials, 'scoped'):
-            # If credentials support scoping, refresh with required scopes
-            credentials = credentials.with_scopes([
-                'https://www.googleapis.com/auth/cloud-platform',
-                'https://www.googleapis.com/auth/generative-language.retriever'
-            ])
+        # Get default credentials WITH required scopes upfront
+        credentials, detected_project = google.auth.default(
+            scopes=[
+                'https://www.googleapis.com/auth/cloud-platform'
+            ]
+        )
         
-        # Refresh to ensure valid token
+        # Refresh to ensure valid token with scopes
         if hasattr(credentials, 'refresh'):
             credentials.refresh(Request())
         
