@@ -28,6 +28,17 @@ PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 REGION = os.environ.get("REGION", "us-central1")
 MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-2.0-flash-exp")
 
+# Configure Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Log configuration on startup
+logger.info(f"=== Configuration ===")
+logger.info(f"PROJECT_ID: {PROJECT_ID}")
+logger.info(f"REGION: {REGION}")
+logger.info(f"MODEL_NAME: {MODEL_NAME}")
+logger.info(f"SHEET_ID: {SHEET_ID[:10]}..." if SHEET_ID else "SHEET_ID: Not set")
+
 PROMPT_TEMPLATE = """
 **ROLE:** Ruthless Technical Screener & Resume Auditor.
 **INPUT JD:** {jd_text}
@@ -90,32 +101,49 @@ You are a skeptical, high-bar technical recruiter at a FAANG-level company. You 
     * **Suggestion:** [Drafted XYZ Bullet]
 """
 
-# Configure Logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 model = None
 sheets_service = None
 
 def initialize_genai():
     """Initialize GenAI with Cloud credentials"""
     try:
-        credentials, project = google.auth.default()
+        # Get default credentials
+        credentials, detected_project = google.auth.default(
+            scopes=['https://www.googleapis.com/auth/cloud-platform']
+        )
+        
+        logger.info(f"Credentials type: {type(credentials).__name__}")
+        logger.info(f"Detected project from credentials: {detected_project}")
+        
+        # Use detected project if PROJECT_ID not set
+        project_to_use = PROJECT_ID or detected_project
+        
+        if not project_to_use:
+            raise ValueError("No project ID found. Set GCP_PROJECT_ID environment variable.")
+        
+        # Configure genai
         genai.configure(
             credentials=credentials,
-            project=PROJECT_ID,
+            project=project_to_use,
             location=REGION
         )
-        logger.info(f"GenAI configured for project: {PROJECT_ID}, region: {REGION}, model: {MODEL_NAME}")
+        
+        logger.info(f"✓ GenAI configured successfully")
+        logger.info(f"  Project: {project_to_use}")
+        logger.info(f"  Region: {REGION}")
+        logger.info(f"  Model: {MODEL_NAME}")
+        
         return True
     except Exception as e:
-        logger.error(f"Failed to initialize GenAI: {e}")
+        logger.error(f"✗ Failed to initialize GenAI: {e}")
+        logger.exception("Full traceback:")
         return False
 
 def get_model():
     global model
     if model is None:
-        initialize_genai()
+        if not initialize_genai():
+            raise RuntimeError("Failed to initialize GenAI")
         
         system_instruction = """You are a ruthless technical screener and resume auditor.
 
@@ -127,12 +155,18 @@ CORE PRINCIPLES:
 - Cross-reference all resume versions in the pool
 - Follow the exact output format requested"""
 
-        model = genai.GenerativeModel(
-            model_name=MODEL_NAME,
-            system_instruction=system_instruction,
-            tools='google_search_retrieval',
-        )
-        logger.info(f"Model initialized: {MODEL_NAME} with Google Search")
+        try:
+            model = genai.GenerativeModel(
+                model_name=MODEL_NAME,
+                system_instruction=system_instruction,
+                tools='google_search_retrieval',
+            )
+            logger.info(f"✓ Model created successfully: {MODEL_NAME}")
+        except Exception as e:
+            logger.error(f"✗ Failed to create model: {e}")
+            logger.exception("Full traceback:")
+            raise
+    
     return model
 
 def get_sheets_service():
@@ -272,14 +306,33 @@ def analyze_with_gemini(jd_text, resumes):
         logger.exception("Error during Gemini generation")
         error_msg = str(e)
         
-        if "quota" in error_msg.lower():
+        # Detailed error analysis
+        if "403" in error_msg or "permission" in error_msg.lower():
+            return (
+                f"Error: Permission denied ({error_msg})\n\n"
+                f"Troubleshooting steps:\n"
+                f"1. Ensure Vertex AI API is enabled: https://console.cloud.google.com/apis/library/aiplatform.googleapis.com?project={PROJECT_ID}\n"
+                f"2. Check service account has 'Vertex AI User' role\n"
+                f"3. Verify PROJECT_ID is correct: {PROJECT_ID}\n"
+                f"4. Verify REGION is supported: {REGION}\n"
+                f"5. Wait 5-10 minutes for permissions to propagate\n"
+                f"6. Try these gcloud commands:\n"
+                f"   gcloud services enable aiplatform.googleapis.com --project={PROJECT_ID}\n"
+                f"   gcloud projects add-iam-policy-binding {PROJECT_ID} --member=serviceAccount:YOUR-SA@{PROJECT_ID}.iam.gserviceaccount.com --role=roles/aiplatform.user"
+            )
+        elif "quota" in error_msg.lower():
             return "Error: API quota exceeded. Please try again later or check your quota settings."
-        elif "permission" in error_msg.lower() or "403" in error_msg:
-            return "Error: Permission denied. Please check your GCP project settings and ensure Vertex AI API is enabled."
         elif "not found" in error_msg.lower() or "404" in error_msg:
-            return f"Error: Model '{MODEL_NAME}' not found. Please verify the model name and region."
+            return (
+                f"Error: Model '{MODEL_NAME}' not found in region '{REGION}'.\n\n"
+                f"Available models:\n"
+                f"- gemini-2.0-flash-exp (us-central1)\n"
+                f"- gemini-1.5-pro-002 (most regions)\n"
+                f"- gemini-1.5-flash-002 (most regions)\n\n"
+                f"Try changing MODEL_NAME environment variable or REGION."
+            )
         elif "invalid" in error_msg.lower() and "api" in error_msg.lower():
-            return "Error: Invalid API configuration. Check that PROJECT_ID and REGION are set correctly."
+            return f"Error: Invalid API configuration. PROJECT_ID={PROJECT_ID}, REGION={REGION}"
         else:
             return f"Error generating content: {error_msg}"
 
