@@ -38,7 +38,7 @@ jobs:
           # Changed name to avoid conflict with the V1 function
           name: "jd-screener-bot-v2"
           description: "Gemini Resume Screener (Gen 2)"
-          runtime: "python310"
+          runtime: "python311"
           region: "${{ env.REGION }}"
           source_dir: "./src"
           entry_point: "handle_chat"
