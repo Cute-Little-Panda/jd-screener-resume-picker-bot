@@ -105,38 +105,38 @@ model = None
 sheets_service = None
 
 def initialize_genai():
-    """Initialize GenAI with service account credentials and proper scopes"""
+    """Initialize GenAI with proper scopes from metadata service"""
     try:
         from google.auth.transport.requests import Request
+        from google.auth.compute_engine import Credentials as ComputeEngineCredentials
+        from google.auth.compute_engine import get_service_account_info
         
-        # Get default credentials WITH required scopes upfront
-        credentials, detected_project = google.auth.default(
-            scopes=[
-                'https://www.googleapis.com/auth/cloud-platform'
-            ]
-        )
+        # Get credentials from metadata service in Cloud Run
+        credentials = ComputeEngineCredentials()
         
-        # Refresh to ensure valid token with scopes
-        if hasattr(credentials, 'refresh'):
-            credentials.refresh(Request())
+        # Request explicit scopes
+        scoped_credentials = credentials.with_scopes([
+            'https://www.googleapis.com/auth/cloud-platform'
+        ])
         
-        logger.info(f"Credentials type: {type(credentials).__name__}")
-        logger.info(f"Detected project: {detected_project}")
+        # Refresh to get token with proper scopes
+        request = Request()
+        scoped_credentials.refresh(request)
         
-        # Use explicit project
+        # Get project ID
+        detected_project = google.auth.default()[1]
         project_to_use = PROJECT_ID or detected_project
         
         if not project_to_use:
             raise ValueError("No project ID found. Set GCP_PROJECT_ID environment variable.")
         
-        # Try to get service account email for logging
-        if hasattr(credentials, 'service_account_email'):
-            logger.info(f"Service Account: {credentials.service_account_email}")
+        logger.info(f"Credentials type: Compute Engine (Cloud Run)")
+        logger.info(f"Detected project: {detected_project}")
         
-        # Configure genai with credentials
+        # Configure genai with scoped credentials
         genai.configure(
-            credentials=credentials,
-            transport="grpc"  # Use gRPC for better reliability
+            credentials=scoped_credentials,
+            transport="rest"  # Use REST API for better compatibility
         )
         
         logger.info(f"✓ GenAI configured successfully")
