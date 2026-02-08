@@ -7,14 +7,16 @@ on:
       - main
       - master
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   SHEET_ID: ${{ vars.SHEET_ID }}
   REGION: ${{ vars.REGION }}
   FUNCTION_NAME: jd-screener-resume-picker-bot
   MODEL_NAME: ${{ vars.MODEL_NAME }}
-  # Removed PROMPT_TEMPLATE here to prevent truncation bugs.
-  # Rely on the hardcoded Python variable instead.
 
 jobs:
   deploy:
@@ -35,9 +37,8 @@ jobs:
       - id: "deploy"
         uses: "google-github-actions/deploy-cloud-functions@v2"
         with:
-          # Changed name to avoid conflict with the V1 function
-          name: "jd-screener-bot-v2"
-          description: "Gemini Resume Screener (Gen 2)"
+          name: "jd-screener-bot-v1"
+          description: "Gemini Resume Screener (Gen 1)"
           runtime: "python311"
           region: "${{ env.REGION }}"
           source_dir: "./src"
