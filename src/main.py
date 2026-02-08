@@ -166,7 +166,7 @@ def analyze_with_gemini(jd_text, resumes):
 
     # 1. Define Tools
     search_tool = Tool.from_google_search_retrieval(
-        google_search_retrieval=grounding.GoogleSearchRetrieval()
+        google_search_retrieval=GoogleSearchRetrieval()
     )
     
     code_tool = Tool.from_code_execution(
