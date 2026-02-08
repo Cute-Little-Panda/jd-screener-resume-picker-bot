@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 
 # --- Vertex AI SDK ---
 import vertexai
-from vertexai.generative_models import GenerativeModel, HarmCategory, HarmBlockThreshold
+from vertexai.generative_models import GenerativeModel, GenerationConfig, HarmCategory, HarmBlockThreshold
 
 # Initialize Firebase Admin
 try:
@@ -238,7 +238,7 @@ def analyze_with_gemini(jd_text, resumes):
     logger.info(f"Current date used: {current_date}")
 
     try:
-        generation_config = genai.GenerationConfig(
+        generation_config = GenerationConfig(
             temperature=0.2,
             top_p=0.95,
             top_k=40,
