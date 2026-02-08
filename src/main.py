@@ -1,19 +1,18 @@
 import json
 import logging
 import os
+from datetime import datetime
 
 # --- Firebase & Google Cloud Imports ---
 import firebase_admin
 import functions_framework
 import google.auth
-import vertexai
 from firebase_admin import auth
 from flask import jsonify
 from googleapiclient.discovery import build
 
-# --- Vertex AI Imports ---
-from vertexai.generative_models import GenerativeModel, GenerationConfig
-from vertexai.preview.generative_models import grounding
+# --- GenAI SDK ---
+import google.generativeai as genai
 
 # Initialize Firebase Admin
 try:
@@ -26,15 +25,19 @@ SHEET_ID = os.environ.get("SHEET_ID")
 SHEET_RANGE = os.environ.get("SHEET_RANGE", "Sheet1!A:D")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 REGION = os.environ.get("REGION", "us-central1")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-2.0-flash-exp")  # or "gemini-1.5-pro-002"
+MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-1.5-pro")
 
 PROMPT_TEMPLATE = """
 **ROLE:** Ruthless Technical Screener & Resume Auditor.
 **INPUT JD:** {jd_text}
 **RESUME POOL:** {context_str}
 
+**CURRENT DATE:** {current_date}
+
 **MINDSET:**
 You are a skeptical, high-bar technical recruiter at a FAANG-level company. You do not offer praise for "participation." You only care about exact matches, verifiable metrics, and specific evidence. If a resume is vague, assume the candidate does not have the skill. If a resume is "promising" but misses key keywords, it is a failure. Be objective, harsh, and direct. Avoid words like "impressive," "strong," or "solid" unless the evidence is undeniable (top 1% percentile).
+
+**IMPORTANT:** For any roles marked as "Present" or "Current", calculate the duration from the start date to {current_date}. Show your calculation clearly.
 
 **GOAL:**
 1.  **Select the Survivor:** detailedly scan the `RESUME POOL` and select the single resume that survives the initial filter against the `INPUT JD`.
@@ -93,21 +96,46 @@ logger = logging.getLogger(__name__)
 model = None
 sheets_service = None
 
+def initialize_genai():
+    """Initialize GenAI with Cloud credentials"""
+    try:
+        # Get default credentials for Cloud Run
+        credentials, project = google.auth.default()
+        
+        # Configure genai to use Vertex AI
+        genai.configure(
+            credentials=credentials,
+            project=PROJECT_ID,
+            location=REGION
+        )
+        logger.info(f"GenAI configured for project: {PROJECT_ID}, region: {REGION}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to initialize GenAI: {e}")
+        return False
+
 def get_model():
     global model
     if model is None:
-        vertexai.init(project=PROJECT_ID, location=REGION)
-        model = GenerativeModel(
-            MODEL_NAME,
-            system_instruction=[
-                "You are a ruthless technical screener and resume auditor. ",
-                "IMPORTANT INSTRUCTIONS:",
-                "1. DATE CHECK: Use Google Search to find 'current date today' and print it at the top of your response.",
-                "2. CALCULATION: Use code execution (Python) for any calculations like years of experience. Do not guess.",
-                "3. EVALUATION: Use the current date as baseline for 'Present' roles.",
-                "4. Use all available tools when needed."
-            ]
+        initialize_genai()
+        
+        system_instruction = """You are a ruthless technical screener and resume auditor.
+
+CORE PRINCIPLES:
+- Be harsh, objective, and data-driven
+- Only reward concrete evidence with metrics
+- Vague claims = automatic failure
+- Calculate dates precisely using the current date provided
+- Cross-reference all resume versions in the pool
+- Follow the exact output format requested"""
+
+        # Create model with tools
+        model = genai.GenerativeModel(
+            model_name=MODEL_NAME,
+            system_instruction=system_instruction,
+            tools='google_search_retrieval',  # Enable Google Search
         )
+        logger.info(f"Model initialized: {MODEL_NAME} with Google Search")
     return model
 
 def get_sheets_service():
@@ -140,13 +168,20 @@ def fetch_resumes_from_sheet(service):
         rows = result.get("values", [])
         resumes = []
         for row in rows:
-            if len(row) < 2: continue
+            if len(row) < 2:
+                continue
             name = row[0]
             content = row[1]
             status = row[2] if len(row) > 2 else ""
             path_url = row[3] if len(row) > 3 else "#"
             is_archived = "archived" in status.lower()
-            resumes.append({"name": name, "content": content, "is_archived": is_archived, "path": path_url})
+            resumes.append({
+                "name": name,
+                "content": content,
+                "is_archived": is_archived,
+                "path": path_url
+            })
+        logger.info(f"Fetched {len(resumes)} resumes from sheet")
         return resumes
     except Exception as e:
         logger.error(f"Error reading sheet: {e}")
@@ -161,58 +196,84 @@ def analyze_with_gemini(jd_text, resumes):
         status = "[ARCHIVED]" if r["is_archived"] else "[ACTIVE]"
         context_str += f"\n--- RESUME: {r['name']}, path_to_resume: {r['path']}, {status} ---\n{r['content']}\n"
 
-    full_prompt = PROMPT_TEMPLATE.format(jd_text=jd_text, context_str=context_str)
+    # Get current date
+    current_date = datetime.now().strftime("%B %d, %Y")
+    
+    full_prompt = PROMPT_TEMPLATE.format(
+        jd_text=jd_text,
+        context_str=context_str,
+        current_date=current_date
+    )
     
     logger.info(f"Prompt length: {len(full_prompt)} characters")
+    logger.info(f"Current date used: {current_date}")
 
     try:
-        # Configure tools via generation config
-        generation_config = GenerationConfig(
-            temperature=0.2,  # Lower temperature for more consistent analysis
+        # Generation config
+        generation_config = genai.GenerationConfig(
+            temperature=0.2,
             top_p=0.95,
             top_k=40,
             max_output_tokens=8192,
         )
 
-        # Enable Google Search grounding
-        google_search_tool = grounding.GoogleSearch()
-
-        # Generate with tools
+        # Generate content with automatic grounding
         response = model_instance.generate_content(
             full_prompt,
-            tools=[google_search_tool],
             generation_config=generation_config,
+            safety_settings={
+                'HARASSMENT': 'BLOCK_NONE',
+                'HATE_SPEECH': 'BLOCK_NONE',
+                'SEXUALLY_EXPLICIT': 'BLOCK_NONE',
+                'DANGEROUS_CONTENT': 'BLOCK_NONE',
+            }
         )
         
-        # Safety and content checks
+        # Check if response was blocked
         if not response.candidates:
-            logger.error("No candidates returned from Gemini")
-            return "Error: No candidates returned from Gemini."
+            logger.error("No candidates in response")
+            return "Error: No response generated. The content may have been filtered."
         
         # Check for blocking
-        if hasattr(response, 'prompt_feedback') and response.prompt_feedback.block_reason:
-            block_reason = response.prompt_feedback.block_reason
-            logger.error(f"Response blocked: {block_reason}")
-            return f"Error: Response blocked due to {block_reason}"
+        if hasattr(response, 'prompt_feedback'):
+            block_reason = getattr(response.prompt_feedback, 'block_reason', None)
+            if block_reason and block_reason != 0:  # 0 = BLOCK_REASON_UNSPECIFIED
+                logger.error(f"Response blocked: {block_reason}")
+                return f"Error: Response was blocked. Reason: {block_reason}"
 
-        # Extract text response
+        # Extract text
         try:
-            return response.text
+            result_text = response.text
+            logger.info(f"Generated response length: {len(result_text)} characters")
+            return result_text
         except ValueError as e:
-            logger.warning(f"Could not extract text directly: {e}")
-            # Try to extract from parts
-            if response.candidates and response.candidates[0].content.parts:
-                parts = response.candidates[0].content.parts
-                text_parts = [part.text for part in parts if hasattr(part, 'text') and part.text]
-                if text_parts:
-                    return "\n".join(text_parts)
+            logger.warning(f"Could not get response.text: {e}")
+            # Try extracting from parts
+            if response.candidates and len(response.candidates) > 0:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                    text_parts = []
+                    for part in candidate.content.parts:
+                        if hasattr(part, 'text'):
+                            text_parts.append(part.text)
+                    if text_parts:
+                        return "\n".join(text_parts)
             
-            logger.error("No text content available in response")
-            return "Error: Model returned no text content. This may be due to safety filters or tool execution."
+            return "Error: Could not extract text from response."
 
     except Exception as e:
         logger.exception("Error during Gemini generation")
-        return f"Error generating content: {str(e)}"
+        error_msg = str(e)
+        
+        # Provide helpful error messages
+        if "quota" in error_msg.lower():
+            return "Error: API quota exceeded. Please try again later or check your quota settings."
+        elif "permission" in error_msg.lower():
+            return "Error: Permission denied. Please check your GCP project settings and API enablement."
+        elif "not found" in error_msg.lower():
+            return f"Error: Model '{MODEL_NAME}' not found. Please verify the model name."
+        else:
+            return f"Error generating content: {error_msg}"
 
 # --- HTML TEMPLATES ---
 HTML_FORM = """
@@ -220,21 +281,123 @@ HTML_FORM = """
 <html>
 <head>
     <title>JD Screener Bot</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body { font-family: sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
-        textarea { width: 100%; height: 200px; padding: 10px; font-family: monospace; }
-        button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; margin-top: 10px; }
-        button:hover { background: #0056b3; }
-        label { font-weight: bold; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 40px auto;
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 32px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 16px;
+        }
+        .info {
+            background: #e7f3ff;
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 24px;
+            border-left: 4px solid #2196F3;
+        }
+        .info strong { color: #1976D2; }
+        label {
+            font-weight: 600;
+            color: #444;
+            display: block;
+            margin-bottom: 10px;
+            font-size: 15px;
+        }
+        textarea { 
+            width: 100%; 
+            height: 300px; 
+            padding: 16px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            resize: vertical;
+            transition: border-color 0.3s;
+            line-height: 1.6;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        button { 
+            padding: 14px 32px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            margin-top: 20px;
+            transition: transform 0.2s, box-shadow 0.2s;
+            width: 100%;
+        }
+        button:hover { 
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        .emoji { font-size: 24px; margin-right: 8px; }
+        @media (max-width: 600px) {
+            .container { padding: 24px; }
+            h1 { font-size: 24px; }
+        }
     </style>
 </head>
 <body>
-    <h1>Resume Screener (Gen 2.5)</h1>
-    <form action="/" method="post">
-        <label for="jd">Paste Job Description (JD):</label><br>
-        <textarea id="jd" name="jd" required placeholder="Paste the JD here..."></textarea><br>
-        <button type="submit">Analyze Resumes</button>
-    </form>
+    <div class="container">
+        <h1><span class="emoji">🎯</span>Resume Screener AI</h1>
+        <p class="subtitle">Powered by Gemini 1.5 Pro with Google Search</p>
+        
+        <div class="info">
+            <strong>📋 How it works:</strong><br>
+            Paste your job description below and our AI will ruthlessly screen all resumes from the database, 
+            providing a detailed technical evaluation with match scores and improvement suggestions.
+        </div>
+        
+        <form action="/" method="post">
+            <label for="jd">📄 Job Description:</label>
+            <textarea 
+                id="jd" 
+                name="jd" 
+                required 
+                placeholder="Paste the complete job description here...
+
+Example:
+Senior Software Engineer - AI/ML
+Requirements:
+- 5+ years of software engineering experience
+- Strong background in Python and machine learning
+- Experience with LLMs and vector databases
+- Cloud platform experience (AWS/GCP)
+..."></textarea>
+            <button type="submit">🔍 Analyze Resumes</button>
+        </form>
+    </div>
 </body>
 </html>
 """
@@ -260,7 +423,7 @@ def handle_chat(request):
             # if not user:
             #     return (jsonify({"error": "Unauthorized"}), 401, headers)
             
-            is_json = request.content_type == "application/json"
+            is_json = request.content_type and "application/json" in request.content_type
             if is_json:
                 data = request.get_json(silent=True) or {}
                 jd_text = data.get("message", {}).get("text", "") or data.get("jd", "")
@@ -268,34 +431,123 @@ def handle_chat(request):
                 jd_text = request.form.get("jd", "")
 
             if not jd_text:
-                return ("Error: No JD provided.", 400, headers)
+                error_response = "Error: No job description provided."
+                if is_json:
+                    return (jsonify({"error": error_response}), 400, headers)
+                return (error_response, 400, headers)
 
             svc = get_sheets_service()
             resumes = fetch_resumes_from_sheet(svc)
             if not resumes:
-                return ("Error: No resumes found in Sheet.", 500, headers)
+                error_response = "Error: No resumes found in Google Sheet. Please check SHEET_ID and SHEET_RANGE."
+                if is_json:
+                    return (jsonify({"error": error_response}), 500, headers)
+                return (error_response, 500, headers)
 
+            logger.info(f"Processing JD (length: {len(jd_text)}) against {len(resumes)} resumes")
             markdown_result = analyze_with_gemini(jd_text, resumes)
 
             if is_json:
-                return (jsonify({"markdown": markdown_result}), 200, headers)
+                return (jsonify({"markdown": markdown_result, "resume_count": len(resumes)}), 200, headers)
             else:
-                # HTML output with better formatting
+                # HTML output with syntax highlighting
                 html_output = f"""
                 <!DOCTYPE html>
                 <html>
                 <head>
                     <title>Analysis Result</title>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
                     <style>
-                        body {{ font-family: sans-serif; padding: 20px; max-width: 1000px; margin: 0 auto; }}
-                        pre {{ white-space: pre-wrap; background: #f5f5f5; padding: 20px; border-radius: 5px; }}
-                        a {{ display: inline-block; margin-top: 20px; color: #007bff; }}
+                        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+                        body {{ 
+                            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                            background: #f5f7fa;
+                            padding: 20px;
+                        }}
+                        .container {{
+                            max-width: 1200px;
+                            margin: 0 auto;
+                            background: white;
+                            padding: 40px;
+                            border-radius: 12px;
+                            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                        }}
+                        h1 {{
+                            color: #333;
+                            margin-bottom: 20px;
+                            padding-bottom: 15px;
+                            border-bottom: 3px solid #667eea;
+                        }}
+                        pre {{ 
+                            white-space: pre-wrap;
+                            background: #f8f9fa;
+                            padding: 24px;
+                            border-radius: 8px;
+                            border-left: 4px solid #667eea;
+                            overflow-x: auto;
+                            line-height: 1.6;
+                            font-family: 'Consolas', 'Monaco', monospace;
+                            font-size: 14px;
+                            color: #333;
+                        }}
+                        .actions {{
+                            margin-top: 24px;
+                            display: flex;
+                            gap: 12px;
+                        }}
+                        a, button {{ 
+                            display: inline-block;
+                            padding: 12px 24px;
+                            color: white;
+                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                            text-decoration: none;
+                            border-radius: 8px;
+                            font-weight: 600;
+                            border: none;
+                            cursor: pointer;
+                            transition: transform 0.2s;
+                        }}
+                        a:hover, button:hover {{
+                            transform: translateY(-2px);
+                            box-shadow: 0 6px 12px rgba(102, 126, 234, 0.3);
+                        }}
+                        .copy-btn {{
+                            background: #28a745;
+                        }}
+                        .meta {{
+                            background: #e7f3ff;
+                            padding: 12px;
+                            border-radius: 6px;
+                            margin-bottom: 20px;
+                            font-size: 14px;
+                        }}
                     </style>
                 </head>
                 <body>
-                    <h1>Analysis Result</h1>
-                    <pre>{markdown_result}</pre>
-                    <a href="/">← Back to Form</a>
+                    <div class="container">
+                        <h1>📊 Resume Analysis Report</h1>
+                        <div class="meta">
+                            <strong>Generated:</strong> {datetime.now().strftime("%B %d, %Y at %I:%M %p")} | 
+                            <strong>Resumes Analyzed:</strong> {len(resumes)}
+                        </div>
+                        <pre id="result">{markdown_result}</pre>
+                        <div class="actions">
+                            <a href="/">← New Analysis</a>
+                            <button class="copy-btn" onclick="copyToClipboard()">📋 Copy to Clipboard</button>
+                        </div>
+                    </div>
+                    <script>
+                        function copyToClipboard() {{
+                            const text = document.getElementById('result').textContent;
+                            navigator.clipboard.writeText(text).then(() => {{
+                                const btn = event.target;
+                                const original = btn.textContent;
+                                btn.textContent = '✓ Copied!';
+                                setTimeout(() => {{ btn.textContent = original; }}, 2000);
+                            }});
+                        }}
+                    </script>
                 </body>
                 </html>
                 """
@@ -304,4 +556,26 @@ def handle_chat(request):
         except Exception as e:
             logger.exception("System Error in request handler")
             error_msg = f"System Error: {str(e)}"
-            return (error_msg, 500, headers)
+            if is_json:
+                return (jsonify({"error": error_msg}), 500, headers)
+            
+            error_html = f"""
+            <html>
+            <head>
+                <title>Error</title>
+                <style>
+                    body {{ font-family: sans-serif; padding: 40px; max-width: 800px; margin: 0 auto; }}
+                    .error {{ background: #fee; border-left: 4px solid #c00; padding: 20px; border-radius: 4px; }}
+                    a {{ display: inline-block; margin-top: 20px; color: #007bff; }}
+                </style>
+            </head>
+            <body>
+                <div class="error">
+                    <h1>❌ Error</h1>
+                    <pre>{error_msg}</pre>
+                </div>
+                <a href='/'>← Back to Form</a>
+            </body>
+            </html>
+            """
+            return (error_html, 500, headers)
