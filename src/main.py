@@ -13,6 +13,7 @@ from googleapiclient.discovery import build
 
 # --- GenAI SDK ---
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # Initialize Firebase Admin
 try:
@@ -25,7 +26,7 @@ SHEET_ID = os.environ.get("SHEET_ID")
 SHEET_RANGE = os.environ.get("SHEET_RANGE", "Sheet1!A:D")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 REGION = os.environ.get("REGION", "us-central1")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-1.5-pro")
+MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-2.0-flash-exp")
 
 PROMPT_TEMPLATE = """
 **ROLE:** Ruthless Technical Screener & Resume Auditor.
@@ -99,16 +100,13 @@ sheets_service = None
 def initialize_genai():
     """Initialize GenAI with Cloud credentials"""
     try:
-        # Get default credentials for Cloud Run
         credentials, project = google.auth.default()
-        
-        # Configure genai to use Vertex AI
         genai.configure(
             credentials=credentials,
             project=PROJECT_ID,
             location=REGION
         )
-        logger.info(f"GenAI configured for project: {PROJECT_ID}, region: {REGION}")
+        logger.info(f"GenAI configured for project: {PROJECT_ID}, region: {REGION}, model: {MODEL_NAME}")
         return True
     except Exception as e:
         logger.error(f"Failed to initialize GenAI: {e}")
@@ -129,11 +127,10 @@ CORE PRINCIPLES:
 - Cross-reference all resume versions in the pool
 - Follow the exact output format requested"""
 
-        # Create model with tools
         model = genai.GenerativeModel(
             model_name=MODEL_NAME,
             system_instruction=system_instruction,
-            tools='google_search_retrieval',  # Enable Google Search
+            tools='google_search_retrieval',
         )
         logger.info(f"Model initialized: {MODEL_NAME} with Google Search")
     return model
@@ -146,26 +143,32 @@ def get_sheets_service():
     return sheets_service
 
 def verify_firebase_token(request):
+    """Verify Firebase ID token from Authorization header"""
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         logger.warning("Auth: Missing or invalid Bearer header")
         return None
+    
     token = auth_header.split("Bearer ")[1]
     try:
         decoded_token = auth.verify_id_token(token)
+        logger.info(f"Auth successful for user: {decoded_token.get('uid')}")
         return decoded_token
     except Exception as e:
         logger.warning(f"Auth: Token verification failed: {e}")
         return None
 
 def fetch_resumes_from_sheet(service):
+    """Fetch all resumes from Google Sheet"""
     try:
         if not SHEET_ID:
             logger.error("SHEET_ID is missing")
             return []
+        
         sheet = service.spreadsheets()
         result = sheet.values().get(spreadsheetId=SHEET_ID, range=SHEET_RANGE).execute()
         rows = result.get("values", [])
+        
         resumes = []
         for row in rows:
             if len(row) < 2:
@@ -181,6 +184,7 @@ def fetch_resumes_from_sheet(service):
                 "is_archived": is_archived,
                 "path": path_url
             })
+        
         logger.info(f"Fetched {len(resumes)} resumes from sheet")
         return resumes
     except Exception as e:
@@ -188,6 +192,7 @@ def fetch_resumes_from_sheet(service):
         return []
 
 def analyze_with_gemini(jd_text, resumes):
+    """Analyze resumes against JD using Gemini"""
     model_instance = get_model()
 
     # Build context from resumes
@@ -209,7 +214,6 @@ def analyze_with_gemini(jd_text, resumes):
     logger.info(f"Current date used: {current_date}")
 
     try:
-        # Generation config
         generation_config = genai.GenerationConfig(
             temperature=0.2,
             top_p=0.95,
@@ -217,38 +221,38 @@ def analyze_with_gemini(jd_text, resumes):
             max_output_tokens=8192,
         )
 
-        # Generate content with automatic grounding
+        safety_settings = {
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+        }
+
+        logger.info("Generating content with Gemini...")
         response = model_instance.generate_content(
             full_prompt,
             generation_config=generation_config,
-            safety_settings={
-                'HARASSMENT': 'BLOCK_NONE',
-                'HATE_SPEECH': 'BLOCK_NONE',
-                'SEXUALLY_EXPLICIT': 'BLOCK_NONE',
-                'DANGEROUS_CONTENT': 'BLOCK_NONE',
-            }
+            safety_settings=safety_settings
         )
         
-        # Check if response was blocked
+        logger.info("Response received, processing...")
+        
         if not response.candidates:
             logger.error("No candidates in response")
             return "Error: No response generated. The content may have been filtered."
         
-        # Check for blocking
         if hasattr(response, 'prompt_feedback'):
             block_reason = getattr(response.prompt_feedback, 'block_reason', None)
-            if block_reason and block_reason != 0:  # 0 = BLOCK_REASON_UNSPECIFIED
+            if block_reason and block_reason != 0:
                 logger.error(f"Response blocked: {block_reason}")
                 return f"Error: Response was blocked. Reason: {block_reason}"
 
-        # Extract text
         try:
             result_text = response.text
             logger.info(f"Generated response length: {len(result_text)} characters")
             return result_text
         except ValueError as e:
             logger.warning(f"Could not get response.text: {e}")
-            # Try extracting from parts
             if response.candidates and len(response.candidates) > 0:
                 candidate = response.candidates[0]
                 if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
@@ -257,325 +261,92 @@ def analyze_with_gemini(jd_text, resumes):
                         if hasattr(part, 'text'):
                             text_parts.append(part.text)
                     if text_parts:
-                        return "\n".join(text_parts)
+                        result = "\n".join(text_parts)
+                        logger.info(f"Extracted text from parts: {len(result)} characters")
+                        return result
             
+            logger.error("Could not extract any text from response")
             return "Error: Could not extract text from response."
 
     except Exception as e:
         logger.exception("Error during Gemini generation")
         error_msg = str(e)
         
-        # Provide helpful error messages
         if "quota" in error_msg.lower():
             return "Error: API quota exceeded. Please try again later or check your quota settings."
-        elif "permission" in error_msg.lower():
-            return "Error: Permission denied. Please check your GCP project settings and API enablement."
-        elif "not found" in error_msg.lower():
-            return f"Error: Model '{MODEL_NAME}' not found. Please verify the model name."
+        elif "permission" in error_msg.lower() or "403" in error_msg:
+            return "Error: Permission denied. Please check your GCP project settings and ensure Vertex AI API is enabled."
+        elif "not found" in error_msg.lower() or "404" in error_msg:
+            return f"Error: Model '{MODEL_NAME}' not found. Please verify the model name and region."
+        elif "invalid" in error_msg.lower() and "api" in error_msg.lower():
+            return "Error: Invalid API configuration. Check that PROJECT_ID and REGION are set correctly."
         else:
             return f"Error generating content: {error_msg}"
 
-# --- HTML TEMPLATES ---
-HTML_FORM = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>JD Screener Bot</title>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        .container {
-            max-width: 900px;
-            margin: 40px auto;
-            background: white;
-            padding: 40px;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-        }
-        h1 {
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 32px;
-        }
-        .subtitle {
-            color: #666;
-            margin-bottom: 30px;
-            font-size: 16px;
-        }
-        .info {
-            background: #e7f3ff;
-            padding: 16px;
-            border-radius: 8px;
-            margin-bottom: 24px;
-            border-left: 4px solid #2196F3;
-        }
-        .info strong { color: #1976D2; }
-        label {
-            font-weight: 600;
-            color: #444;
-            display: block;
-            margin-bottom: 10px;
-            font-size: 15px;
-        }
-        textarea { 
-            width: 100%; 
-            height: 300px; 
-            padding: 16px;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 14px;
-            border: 2px solid #ddd;
-            border-radius: 8px;
-            resize: vertical;
-            transition: border-color 0.3s;
-            line-height: 1.6;
-        }
-        textarea:focus {
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-        button { 
-            padding: 14px 32px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 16px;
-            font-weight: 600;
-            margin-top: 20px;
-            transition: transform 0.2s, box-shadow 0.2s;
-            width: 100%;
-        }
-        button:hover { 
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
-        }
-        button:active {
-            transform: translateY(0);
-        }
-        .emoji { font-size: 24px; margin-right: 8px; }
-        @media (max-width: 600px) {
-            .container { padding: 24px; }
-            h1 { font-size: 24px; }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1><span class="emoji">🎯</span>Resume Screener AI</h1>
-        <p class="subtitle">Powered by Gemini 1.5 Pro with Google Search</p>
-        
-        <div class="info">
-            <strong>📋 How it works:</strong><br>
-            Paste your job description below and our AI will ruthlessly screen all resumes from the database, 
-            providing a detailed technical evaluation with match scores and improvement suggestions.
-        </div>
-        
-        <form action="/" method="post">
-            <label for="jd">📄 Job Description:</label>
-            <textarea 
-                id="jd" 
-                name="jd" 
-                required 
-                placeholder="Paste the complete job description here...
-
-Example:
-Senior Software Engineer - AI/ML
-Requirements:
-- 5+ years of software engineering experience
-- Strong background in Python and machine learning
-- Experience with LLMs and vector databases
-- Cloud platform experience (AWS/GCP)
-..."></textarea>
-            <button type="submit">🔍 Analyze Resumes</button>
-        </form>
-    </div>
-</body>
-</html>
-"""
-
 @functions_framework.http
 def handle_chat(request):
+    """Main HTTP handler for resume screening API"""
     headers = {
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
     }
     
+    # Handle CORS preflight
     if request.method == "OPTIONS":
         return ("", 204, headers)
     
-    if request.method == "GET":
-        return (HTML_FORM, 200, headers)
+    # Only accept POST requests
+    if request.method != "POST":
+        return (jsonify({"error": "Method not allowed. Use POST."}), 405, headers)
     
-    if request.method == "POST":
-        try:
-            # Optional: Enforce auth if needed
-            # user = verify_firebase_token(request)
-            # if not user:
-            #     return (jsonify({"error": "Unauthorized"}), 401, headers)
-            
-            is_json = request.content_type and "application/json" in request.content_type
-            if is_json:
-                data = request.get_json(silent=True) or {}
-                jd_text = data.get("message", {}).get("text", "") or data.get("jd", "")
-            else:
-                jd_text = request.form.get("jd", "")
-
-            if not jd_text:
-                error_response = "Error: No job description provided."
-                if is_json:
-                    return (jsonify({"error": error_response}), 400, headers)
-                return (error_response, 400, headers)
-
-            svc = get_sheets_service()
-            resumes = fetch_resumes_from_sheet(svc)
-            if not resumes:
-                error_response = "Error: No resumes found in Google Sheet. Please check SHEET_ID and SHEET_RANGE."
-                if is_json:
-                    return (jsonify({"error": error_response}), 500, headers)
-                return (error_response, 500, headers)
-
-            logger.info(f"Processing JD (length: {len(jd_text)}) against {len(resumes)} resumes")
-            markdown_result = analyze_with_gemini(jd_text, resumes)
-
-            if is_json:
-                return (jsonify({"markdown": markdown_result, "resume_count": len(resumes)}), 200, headers)
-            else:
-                # HTML output with syntax highlighting
-                html_output = f"""
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <title>Analysis Result</title>
-                    <meta charset="UTF-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <style>
-                        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-                        body {{ 
-                            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                            background: #f5f7fa;
-                            padding: 20px;
-                        }}
-                        .container {{
-                            max-width: 1200px;
-                            margin: 0 auto;
-                            background: white;
-                            padding: 40px;
-                            border-radius: 12px;
-                            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                        }}
-                        h1 {{
-                            color: #333;
-                            margin-bottom: 20px;
-                            padding-bottom: 15px;
-                            border-bottom: 3px solid #667eea;
-                        }}
-                        pre {{ 
-                            white-space: pre-wrap;
-                            background: #f8f9fa;
-                            padding: 24px;
-                            border-radius: 8px;
-                            border-left: 4px solid #667eea;
-                            overflow-x: auto;
-                            line-height: 1.6;
-                            font-family: 'Consolas', 'Monaco', monospace;
-                            font-size: 14px;
-                            color: #333;
-                        }}
-                        .actions {{
-                            margin-top: 24px;
-                            display: flex;
-                            gap: 12px;
-                        }}
-                        a, button {{ 
-                            display: inline-block;
-                            padding: 12px 24px;
-                            color: white;
-                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                            text-decoration: none;
-                            border-radius: 8px;
-                            font-weight: 600;
-                            border: none;
-                            cursor: pointer;
-                            transition: transform 0.2s;
-                        }}
-                        a:hover, button:hover {{
-                            transform: translateY(-2px);
-                            box-shadow: 0 6px 12px rgba(102, 126, 234, 0.3);
-                        }}
-                        .copy-btn {{
-                            background: #28a745;
-                        }}
-                        .meta {{
-                            background: #e7f3ff;
-                            padding: 12px;
-                            border-radius: 6px;
-                            margin-bottom: 20px;
-                            font-size: 14px;
-                        }}
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <h1>📊 Resume Analysis Report</h1>
-                        <div class="meta">
-                            <strong>Generated:</strong> {datetime.now().strftime("%B %d, %Y at %I:%M %p")} | 
-                            <strong>Resumes Analyzed:</strong> {len(resumes)}
-                        </div>
-                        <pre id="result">{markdown_result}</pre>
-                        <div class="actions">
-                            <a href="/">← New Analysis</a>
-                            <button class="copy-btn" onclick="copyToClipboard()">📋 Copy to Clipboard</button>
-                        </div>
-                    </div>
-                    <script>
-                        function copyToClipboard() {{
-                            const text = document.getElementById('result').textContent;
-                            navigator.clipboard.writeText(text).then(() => {{
-                                const btn = event.target;
-                                const original = btn.textContent;
-                                btn.textContent = '✓ Copied!';
-                                setTimeout(() => {{ btn.textContent = original; }}, 2000);
-                            }});
-                        }}
-                    </script>
-                </body>
-                </html>
-                """
-                return (html_output, 200, headers)
-
-        except Exception as e:
-            logger.exception("System Error in request handler")
-            error_msg = f"System Error: {str(e)}"
-            if is_json:
-                return (jsonify({"error": error_msg}), 500, headers)
-            
-            error_html = f"""
-            <html>
-            <head>
-                <title>Error</title>
-                <style>
-                    body {{ font-family: sans-serif; padding: 40px; max-width: 800px; margin: 0 auto; }}
-                    .error {{ background: #fee; border-left: 4px solid #c00; padding: 20px; border-radius: 4px; }}
-                    a {{ display: inline-block; margin-top: 20px; color: #007bff; }}
-                </style>
-            </head>
-            <body>
-                <div class="error">
-                    <h1>❌ Error</h1>
-                    <pre>{error_msg}</pre>
-                </div>
-                <a href='/'>← Back to Form</a>
-            </body>
-            </html>
-            """
-            return (error_html, 500, headers)
+    try:
+        # Verify Firebase authentication
+        user = verify_firebase_token(request)
+        if not user:
+            logger.warning("Unauthorized request attempt")
+            return (jsonify({"error": "Unauthorized. Invalid or missing Firebase token."}), 401, headers)
+        
+        # Parse request body
+        data = request.get_json(silent=True)
+        if not data:
+            return (jsonify({"error": "Invalid JSON in request body"}), 400, headers)
+        
+        # Extract JD text from different possible formats
+        jd_text = data.get("message", {}).get("text", "") or data.get("jd", "")
+        
+        if not jd_text:
+            return (jsonify({"error": "No job description provided. Send 'jd' field in request body."}), 400, headers)
+        
+        logger.info(f"Request from user {user.get('uid')}: JD length {len(jd_text)} chars")
+        
+        # Fetch resumes from Google Sheet
+        svc = get_sheets_service()
+        resumes = fetch_resumes_from_sheet(svc)
+        
+        if not resumes:
+            return (jsonify({
+                "error": "No resumes found in Google Sheet. Check SHEET_ID and SHEET_RANGE configuration."
+            }), 500, headers)
+        
+        # Analyze with Gemini
+        logger.info(f"Processing JD against {len(resumes)} resumes")
+        markdown_result = analyze_with_gemini(jd_text, resumes)
+        
+        # Return response
+        response_data = {
+            "markdown": markdown_result,
+            "resume_count": len(resumes),
+            "model": MODEL_NAME,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        logger.info(f"Successfully processed request for user {user.get('uid')}")
+        return (jsonify(response_data), 200, headers)
+        
+    except Exception as e:
+        logger.exception("System error in request handler")
+        return (jsonify({
+            "error": f"System error: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }), 500, headers)
