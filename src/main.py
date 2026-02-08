@@ -109,7 +109,6 @@ def initialize_genai():
     try:
         from google.auth.transport.requests import Request
         from google.auth.compute_engine import Credentials as ComputeEngineCredentials
-        from google.auth.compute_engine import get_service_account_info
         
         # Get credentials from metadata service in Cloud Run
         credentials = ComputeEngineCredentials()
