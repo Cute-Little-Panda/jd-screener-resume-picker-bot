@@ -15,10 +15,11 @@ from googleapiclient.discovery import build
 from vertexai.generative_models import (
     GenerativeModel,
     Tool,
-    GoogleSearchRetrieval,
     CodeExecution,
     ToolConfig,
 )
+
+from vertexai.preview.generative_models import grounding
 
 # Initialize Firebase Admin
 try:
@@ -152,7 +153,7 @@ def analyze_with_gemini(jd_text, resumes):
 
     # 1. Define Tools
     search_tool = Tool.from_google_search_retrieval(
-        google_search_retrieval=GoogleSearchRetrieval()
+        google_search_retrieval=grounding.GoogleSearchRetrieval()
     )
     
     code_tool = Tool.from_code_execution(
