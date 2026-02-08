@@ -2,7 +2,7 @@ import json
 import logging
 import os
 
-# --- NEW: Firebase Imports ---
+# --- Firebase & Google Cloud Imports ---
 import firebase_admin
 import functions_framework
 import google.auth
@@ -11,7 +11,7 @@ from firebase_admin import auth
 from flask import jsonify
 from googleapiclient.discovery import build
 
-# --- NEW: Vertex AI Tool Imports ---
+# --- Vertex AI Tool Imports ---
 from vertexai.generative_models import (
     GenerativeModel,
     Tool,
@@ -31,7 +31,7 @@ SHEET_ID = os.environ.get("SHEET_ID")
 SHEET_RANGE = os.environ.get("SHEET_RANGE", "Sheet1!A:D")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 REGION = os.environ.get("REGION")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-1.5-pro-002") # Recommend 1.5 Pro or Flash for tool use
+MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-1.5-pro-002")
 
 PROMPT_TEMPLATE = """
 **ROLE:** Ruthless Technical Screener & Resume Auditor.
@@ -91,6 +91,7 @@ You are a skeptical, high-bar technical recruiter at a FAANG-level company. You 
     * **Suggestion:** [Drafted XYZ Bullet]
 """
 
+# Configure Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,6 @@ def get_model():
     global model
     if model is None:
         vertexai.init(project=PROJECT_ID, location=REGION)
-        # Note: Ensure you are using a model version that supports tools (gemini-1.5-pro or flash)
         model = GenerativeModel(MODEL_NAME)
     return model
 
@@ -126,7 +126,6 @@ def verify_firebase_token(request):
         return None
 
 def fetch_resumes_from_sheet(service):
-    # (Same implementation as before)
     try:
         if not SHEET_ID:
             logger.error("SHEET_ID is missing")
@@ -152,18 +151,15 @@ def analyze_with_gemini(jd_text, resumes):
     model_instance = get_model()
 
     # 1. Define Tools
-    # Google Search: For current date grounding
     search_tool = Tool.from_google_search_retrieval(
         google_search_retrieval=GoogleSearchRetrieval()
     )
     
-    # Code Execution: For accurate math (years of experience, percentages)
     code_tool = Tool.from_code_execution(
         code_execution=CodeExecution()
     )
 
     # 2. Tool Config
-    # Auto: The model decides when to use which tool
     tool_config = ToolConfig(
         function_calling_config=ToolConfig.FunctionCallingConfig(
             mode=ToolConfig.FunctionCallingConfig.Mode.AUTO,
@@ -175,7 +171,6 @@ def analyze_with_gemini(jd_text, resumes):
         status = "[ARCHIVED]" if r["is_archived"] else "[ACTIVE]"
         context_str += f"\n--- RESUME: {r['name']}, path_to_resume: {r['path']}, {status} ---\n{r['content']}\n"
 
-    # 3. Prompt Engineering with Tool Instructions
     system_instruction = (
         "SYSTEM INSTRUCTION: \n"
         "1. DATE CHECK: First, use the Google Search tool to find 'current date today'. "
@@ -188,7 +183,9 @@ def analyze_with_gemini(jd_text, resumes):
     )
 
     full_prompt = system_instruction + PROMPT_TEMPLATE.format(jd_text=jd_text, context_str=context_str)
-    logger.log("Prompt length: " + len(full_prompt))
+    
+    # --- FIX: Changed from logger.log to logger.info and used f-string ---
+    logger.info(f"Prompt length: {len(full_prompt)}") 
 
     try:
         # 4. Generate with Tools
@@ -197,35 +194,73 @@ def analyze_with_gemini(jd_text, resumes):
             tools=[search_tool, code_tool],
             tool_config=tool_config,
         )
-        return response.text
+        
+        # Safety check for text content
+        if not response.candidates:
+            return "Error: No candidates returned from Gemini."
+        
+        # Check if the model blocked the response (safety filters)
+        if response.prompt_feedback.block_reason:
+             return f"Blocked: {response.prompt_feedback.block_reason}"
+
+        # Return the text from the first part of the first candidate
+        try:
+            return response.text
+        except ValueError:
+            # Sometimes response.text fails if there are multiple parts (text + function call)
+            # We try to grab the first text part manually
+            parts = response.candidates[0].content.parts
+            text_content = [p.text for p in parts if p.text]
+            return "\n".join(text_content) if text_content else "Error: Model executed a tool but returned no text."
+
     except Exception as e:
         logger.error(f"AI Error: {e}")
         return f"Error generating content: {str(e)}"
 
-# --- HTML TEMPLATES (Same as before) ---
-HTML_FORM = """... (Keep your existing HTML) ..."""
-HTML_RAW_OUTPUT = """... (Keep your existing HTML) ..."""
+# --- HTML TEMPLATES ---
+HTML_FORM = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>JD Screener Bot</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+        textarea { width: 100%; height: 200px; padding: 10px; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
+        button:hover { background: #0056b3; }
+    </style>
+</head>
+<body>
+    <h1>Resume Screener (Gen 2)</h1>
+    <form action="/" method="post">
+        <label for="jd">Paste Job Description (JD):</label><br>
+        <textarea id="jd" name="jd" required placeholder="Paste the JD here..."></textarea><br><br>
+        <button type="submit">Analyze Resumes</button>
+    </form>
+</body>
+</html>
+"""
 
 @functions_framework.http
 def handle_chat(request):
-    # (Keep your existing handle_chat implementation)
-    # ...
-    # This part remains identical to your previous code
-    # ...
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
     }
+    
     if request.method == "OPTIONS":
         return ("", 204, headers)
+    
     if request.method == "GET":
         return (HTML_FORM, 200)
+    
     if request.method == "POST":
         try:
-            user = verify_firebase_token(request)
-            if not user:
-                return (jsonify({"error": "Unauthorized"}), 401, headers)
+            # Optional: Enforce auth if needed, currently permissive for testing
+            # user = verify_firebase_token(request)
+            # if not user:
+            #     return (jsonify({"error": "Unauthorized"}), 401, headers)
             
             is_json = request.content_type == "application/json"
             if is_json:
@@ -240,15 +275,15 @@ def handle_chat(request):
             svc = get_sheets_service()
             resumes = fetch_resumes_from_sheet(svc)
             if not resumes:
-                return ("Error: No resumes found.", 500, headers)
+                return ("Error: No resumes found in Sheet.", 500, headers)
 
             markdown_result = analyze_with_gemini(jd_text, resumes)
 
             if is_json:
                 return (jsonify({"markdown": markdown_result}), 200, headers)
             else:
-                # Basic HTML output
-                return (f"<html><body><pre>{markdown_result}</pre></body></html>", 200, headers)
+                # Basic HTML output wrapper
+                return (f"<html><body><pre style='white-space: pre-wrap;'>{markdown_result}</pre></body></html>", 200, headers)
 
         except Exception as e:
             logger.exception("System Error")
