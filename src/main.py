@@ -168,15 +168,24 @@ def fetch_resumes_from_sheet(service):
 
 def analyze_with_gemini(jd_text, resumes):
     model_instance = get_model()
+    tools_list = []
 
     # 1. Define Tools
-    search_tool = Tool.from_google_search_retrieval(
-        google_search_retrieval=GoogleSearchRetrieval()
-    )
-    
-    code_tool = Tool.from_code_execution(
-        code_execution=CodeExecution()
-    )
+    if GoogleSearchRetrieval:
+        search_tool = Tool.from_google_search_retrieval(
+            google_search_retrieval=GoogleSearchRetrieval()
+        )
+        tools_list.append(search_tool)
+    else:
+        logger.warning("GoogleSearchRetrieval not found in this environment.")
+
+    if CodeExecution:
+        code_tool = Tool.from_code_execution(
+            code_execution=CodeExecution()
+        )
+        tools_list.append(code_tool)
+    else:
+        logger.warning("CodeExecution not found in this environment.")
 
     # 2. Tool Config
     tool_config = ToolConfig(
@@ -210,7 +219,7 @@ def analyze_with_gemini(jd_text, resumes):
         # 4. Generate with Tools
         response = model_instance.generate_content(
             full_prompt,
-            tools=[search_tool, code_tool],
+            tools=tools_list,
             tool_config=tool_config,
         )
         
