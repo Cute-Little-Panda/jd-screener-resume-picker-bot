@@ -17,10 +17,22 @@ from vertexai.generative_models import (
     Tool,
     ToolConfig,
 )
-from vertexai.preview.generative_models import (
-    grounding,
-    CodeExecution,
-)
+
+# 1. Code Execution: Try Main (GA) first, then fallback to Preview
+try:
+    from vertexai.generative_models import CodeExecution
+except ImportError:
+    from vertexai.preview.generative_models import CodeExecution
+
+# 2. Google Search: Try Main (GA) first, then fallback to Preview
+try:
+    from vertexai.generative_models import GoogleSearchRetrieval
+except ImportError:
+    try:
+        from vertexai.preview.generative_models import GoogleSearchRetrieval
+    except ImportError:
+        from vertexai.preview.generative_models import grounding
+        GoogleSearchRetrieval = grounding.GoogleSearchRetrieval
 
 # Initialize Firebase Admin
 try:
