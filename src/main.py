@@ -26,7 +26,18 @@ SHEET_ID = os.environ.get("SHEET_ID")
 SHEET_RANGE = os.environ.get("SHEET_RANGE", "Sheet1!A:D")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 REGION = os.environ.get("REGION", "us-central1")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-2.0-flash-exp")
+MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-1.5-pro-002")  # Changed to more stable model
+
+# Configure Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Log configuration on startup
+logger.info(f"=== Configuration ===")
+logger.info(f"PROJECT_ID: {PROJECT_ID}")
+logger.info(f"REGION: {REGION}")
+logger.info(f"MODEL_NAME: {MODEL_NAME}")
+logger.info(f"SHEET_ID: {SHEET_ID[:10]}..." if SHEET_ID else "SHEET_ID: Not set")
 
 PROMPT_TEMPLATE = """
 **ROLE:** Ruthless Technical Screener & Resume Auditor.
@@ -90,32 +101,36 @@ You are a skeptical, high-bar technical recruiter at a FAANG-level company. You 
     * **Suggestion:** [Drafted XYZ Bullet]
 """
 
-# Configure Logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 model = None
 sheets_service = None
 
 def initialize_genai():
-    """Initialize GenAI with Cloud credentials"""
+    """Initialize GenAI with API Key"""
     try:
-        credentials, project = google.auth.default()
-        genai.configure(
-            credentials=credentials,
-            project=PROJECT_ID,
-            location=REGION
-        )
-        logger.info(f"GenAI configured for project: {PROJECT_ID}, region: {REGION}, model: {MODEL_NAME}")
+        # Get API key from environment
+        api_key = os.environ.get("GENAI_API_KEY")
+        
+        if not api_key:
+            logger.error("GENAI_API_KEY environment variable not set")
+            return False
+        
+        # Configure genai with API key
+        genai.configure(api_key=api_key)
+        
+        logger.info(f"✓ GenAI configured successfully with API Key")
+        logger.info(f"  Model: {MODEL_NAME}")
+        
         return True
     except Exception as e:
-        logger.error(f"Failed to initialize GenAI: {e}")
+        logger.error(f"✗ Failed to initialize GenAI: {e}")
+        logger.exception("Full traceback:")
         return False
 
 def get_model():
     global model
     if model is None:
-        initialize_genai()
+        if not initialize_genai():
+            raise RuntimeError("Failed to initialize GenAI")
         
         system_instruction = """You are a ruthless technical screener and resume auditor.
 
@@ -127,12 +142,19 @@ CORE PRINCIPLES:
 - Cross-reference all resume versions in the pool
 - Follow the exact output format requested"""
 
-        model = genai.GenerativeModel(
-            model_name=MODEL_NAME,
-            system_instruction=system_instruction,
-            tools='google_search_retrieval',
-        )
-        logger.info(f"Model initialized: {MODEL_NAME} with Google Search")
+        try:
+            # Try without tools first to isolate the issue
+            logger.info(f"Creating model: {MODEL_NAME}")
+            model = genai.GenerativeModel(
+                model_name=MODEL_NAME,
+                system_instruction=system_instruction,
+            )
+            logger.info(f"✓ Model created successfully: {MODEL_NAME}")
+        except Exception as e:
+            logger.error(f"✗ Failed to create model: {e}")
+            logger.exception("Full traceback:")
+            raise
+    
     return model
 
 def get_sheets_service():
@@ -249,7 +271,7 @@ def analyze_with_gemini(jd_text, resumes):
 
         try:
             result_text = response.text
-            logger.info(f"Generated response length: {len(result_text)} characters")
+            logger.info(f"✓ Generated response length: {len(result_text)} characters")
             return result_text
         except ValueError as e:
             logger.warning(f"Could not get response.text: {e}")
@@ -262,7 +284,7 @@ def analyze_with_gemini(jd_text, resumes):
                             text_parts.append(part.text)
                     if text_parts:
                         result = "\n".join(text_parts)
-                        logger.info(f"Extracted text from parts: {len(result)} characters")
+                        logger.info(f"✓ Extracted text from parts: {len(result)} characters")
                         return result
             
             logger.error("Could not extract any text from response")
@@ -272,16 +294,34 @@ def analyze_with_gemini(jd_text, resumes):
         logger.exception("Error during Gemini generation")
         error_msg = str(e)
         
-        if "quota" in error_msg.lower():
-            return "Error: API quota exceeded. Please try again later or check your quota settings."
-        elif "permission" in error_msg.lower() or "403" in error_msg:
-            return "Error: Permission denied. Please check your GCP project settings and ensure Vertex AI API is enabled."
+        # Detailed error analysis
+        if "403" in error_msg or "permission" in error_msg.lower():
+            return (
+                f"Error: Permission denied\n\n"
+                f"Details: {error_msg}\n\n"
+                f"Configuration:\n"
+                f"- Project: {PROJECT_ID}\n"
+                f"- Region: {REGION}\n"
+                f"- Model: {MODEL_NAME}\n\n"
+                f"Your service account has the right permissions. Try:\n"
+                f"1. Wait 10-15 minutes for IAM propagation\n"
+                f"2. Check if Vertex AI API is enabled:\n"
+                f"   https://console.cloud.google.com/apis/library/aiplatform.googleapis.com?project={PROJECT_ID}\n"
+                f"3. Try redeploying the Cloud Function"
+            )
+        elif "quota" in error_msg.lower():
+            return "Error: API quota exceeded. Please check your quota limits in GCP Console."
         elif "not found" in error_msg.lower() or "404" in error_msg:
-            return f"Error: Model '{MODEL_NAME}' not found. Please verify the model name and region."
-        elif "invalid" in error_msg.lower() and "api" in error_msg.lower():
-            return "Error: Invalid API configuration. Check that PROJECT_ID and REGION are set correctly."
+            return (
+                f"Error: Model or endpoint not found\n\n"
+                f"Current config: {MODEL_NAME} in {REGION}\n\n"
+                f"Try these combinations:\n"
+                f"- MODEL_NAME=gemini-1.5-pro-002, REGION=us-central1\n"
+                f"- MODEL_NAME=gemini-1.5-flash-002, REGION=us-central1\n"
+                f"- MODEL_NAME=gemini-2.0-flash-exp, REGION=us-central1"
+            )
         else:
-            return f"Error generating content: {error_msg}"
+            return f"Error: {error_msg}"
 
 @functions_framework.http
 def handle_chat(request):
@@ -312,7 +352,7 @@ def handle_chat(request):
         if not data:
             return (jsonify({"error": "Invalid JSON in request body"}), 400, headers)
         
-        # Extract JD text from different possible formats
+        # Extract JD text
         jd_text = data.get("message", {}).get("text", "") or data.get("jd", "")
         
         if not jd_text:
@@ -341,7 +381,7 @@ def handle_chat(request):
             "timestamp": datetime.now().isoformat()
         }
         
-        logger.info(f"Successfully processed request for user {user.get('uid')}")
+        logger.info(f"✓ Successfully processed request for user {user.get('uid')}")
         return (jsonify(response_data), 200, headers)
         
     except Exception as e:

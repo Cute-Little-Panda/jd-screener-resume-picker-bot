@@ -47,6 +47,7 @@ jobs:
           min_instances: 1
           max_instances: 1
           env_vars: |-
+            GENAI_API_KEY=${{ secrets.GENAI_API_KEY }}
             SHEET_ID=${{ vars.SHEET_ID }}
             GCP_PROJECT_ID=${{ env.PROJECT_ID }}
             MODEL_NAME=${{ vars.MODEL_NAME }}
