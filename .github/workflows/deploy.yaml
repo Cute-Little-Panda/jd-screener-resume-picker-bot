@@ -17,6 +17,7 @@ env:
   REGION: ${{ vars.REGION }}
   FUNCTION_NAME: jd-screener-resume-picker-bot
   MODEL_NAME: ${{ vars.MODEL_NAME }}
+  SERVICE_ACCOUNT: ${{ vars.SERVICE_ACCOUNT }}
 
 jobs:
   deploy:
@@ -46,8 +47,8 @@ jobs:
           memory_mb: "512Mi"
           min_instances: 1
           max_instances: 1
+          service_account: "${{ env.SERVICE_ACCOUNT }}"
           env_vars: |-
-            GENAI_API_KEY=${{ secrets.GENAI_API_KEY }}
             SHEET_ID=${{ vars.SHEET_ID }}
             GCP_PROJECT_ID=${{ env.PROJECT_ID }}
             MODEL_NAME=${{ vars.MODEL_NAME }}

@@ -105,19 +105,46 @@ model = None
 sheets_service = None
 
 def initialize_genai():
-    """Initialize GenAI with API Key"""
+    """Initialize GenAI with service account credentials and proper scopes"""
     try:
-        # Get API key from environment
-        api_key = os.environ.get("GENAI_API_KEY")
+        # Get default credentials - these come from the service account in Cloud Functions
+        credentials, detected_project = google.auth.default()
         
-        if not api_key:
-            logger.error("GENAI_API_KEY environment variable not set")
-            return False
+        # Ensure credentials have the right scopes
+        from google.auth.transport.requests import Request
         
-        # Configure genai with API key
-        genai.configure(api_key=api_key)
+        if hasattr(credentials, 'scoped'):
+            # If credentials support scoping, refresh with required scopes
+            credentials = credentials.with_scopes([
+                'https://www.googleapis.com/auth/cloud-platform',
+                'https://www.googleapis.com/auth/generative-language.retriever'
+            ])
         
-        logger.info(f"✓ GenAI configured successfully with API Key")
+        # Refresh to ensure valid token
+        if hasattr(credentials, 'refresh'):
+            credentials.refresh(Request())
+        
+        logger.info(f"Credentials type: {type(credentials).__name__}")
+        logger.info(f"Detected project: {detected_project}")
+        
+        # Use explicit project
+        project_to_use = PROJECT_ID or detected_project
+        
+        if not project_to_use:
+            raise ValueError("No project ID found. Set GCP_PROJECT_ID environment variable.")
+        
+        # Try to get service account email for logging
+        if hasattr(credentials, 'service_account_email'):
+            logger.info(f"Service Account: {credentials.service_account_email}")
+        
+        # Configure genai with credentials
+        genai.configure(
+            credentials=credentials,
+            transport="grpc"  # Use gRPC for better reliability
+        )
+        
+        logger.info(f"✓ GenAI configured successfully")
+        logger.info(f"  Project: {project_to_use}")
         logger.info(f"  Model: {MODEL_NAME}")
         
         return True
