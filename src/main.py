@@ -11,9 +11,9 @@ from firebase_admin import auth
 from flask import jsonify
 from googleapiclient.discovery import build
 
-# --- GenAI SDK ---
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
+# --- Vertex AI SDK ---
+import vertexai
+from vertexai.generative_models import GenerativeModel, HarmCategory, HarmBlockThreshold
 
 # Initialize Firebase Admin
 try:
@@ -105,46 +105,26 @@ model = None
 sheets_service = None
 
 def initialize_genai():
-    """Initialize GenAI with proper scopes from metadata service"""
+    """Initialize Vertex AI with proper authentication"""
     try:
-        from google.auth.transport.requests import Request
-        from google.auth.compute_engine import Credentials as ComputeEngineCredentials
-        
-        # Get credentials from metadata service in Cloud Run
-        credentials = ComputeEngineCredentials()
-        
-        # Request explicit scopes
-        scoped_credentials = credentials.with_scopes([
-            'https://www.googleapis.com/auth/cloud-platform'
-        ])
-        
-        # Refresh to get token with proper scopes
-        request = Request()
-        scoped_credentials.refresh(request)
-        
-        # Get project ID
-        detected_project = google.auth.default()[1]
-        project_to_use = PROJECT_ID or detected_project
+        # Get project ID from environment
+        project_to_use = PROJECT_ID
         
         if not project_to_use:
             raise ValueError("No project ID found. Set GCP_PROJECT_ID environment variable.")
         
-        logger.info(f"Credentials type: Compute Engine (Cloud Run)")
-        logger.info(f"Detected project: {detected_project}")
+        # Initialize Vertex AI with project and location
+        # Cloud Run automatically handles service account authentication
+        vertexai.init(project=project_to_use, location=REGION)
         
-        # Configure genai with scoped credentials
-        genai.configure(
-            credentials=scoped_credentials,
-            transport="rest"  # Use REST API for better compatibility
-        )
-        
-        logger.info(f"✓ GenAI configured successfully")
+        logger.info(f"✓ Vertex AI initialized successfully")
         logger.info(f"  Project: {project_to_use}")
+        logger.info(f"  Region: {REGION}")
         logger.info(f"  Model: {MODEL_NAME}")
         
         return True
     except Exception as e:
-        logger.error(f"✗ Failed to initialize GenAI: {e}")
+        logger.error(f"✗ Failed to initialize Vertex AI: {e}")
         logger.exception("Full traceback:")
         return False
 
@@ -165,9 +145,9 @@ CORE PRINCIPLES:
 - Follow the exact output format requested"""
 
         try:
-            # Try without tools first to isolate the issue
+            # Create Vertex AI GenerativeModel
             logger.info(f"Creating model: {MODEL_NAME}")
-            model = genai.GenerativeModel(
+            model = GenerativeModel(
                 model_name=MODEL_NAME,
                 system_instruction=system_instruction,
             )
