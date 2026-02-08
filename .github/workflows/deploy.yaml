@@ -36,17 +36,19 @@ jobs:
           credentials_json: "${{ secrets.GCP_SA_KEY }}"
 
       - id: "deploy"
-        uses: "google-github-actions/deploy-cloud-functions@v2"
+        uses: "google-github-actions/deploy-cloud-functions@v4"
         with:
           name: "jd-screener-bot-v2"
-          description: "Gemini Resume Screener (Gen 1)"
+          description: "Gemini Resume Screener (Gen 2)"
           runtime: "python311"
           region: "${{ env.REGION }}"
           source_dir: "./src"
           entry_point: "handle_chat"
-          memory_mb: 512
+          memory_mb: 1024
+          timeout_seconds: 540
           min_instances: 1
           max_instances: 1
+          gen2: true
           service_account: "${{ env.SERVICE_ACCOUNT }}"
           env_vars: |-
             SHEET_ID=${{ vars.SHEET_ID }}
