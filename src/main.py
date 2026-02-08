@@ -11,33 +11,9 @@ from firebase_admin import auth
 from flask import jsonify
 from googleapiclient.discovery import build
 
-# --- Vertex AI Tool Imports ---
-from vertexai.generative_models import (
-    GenerativeModel,
-    Tool,
-    ToolConfig,
-)
-
-# 1. Dynamically find CodeExecution
-try:
-    from vertexai.generative_models import CodeExecution
-except ImportError:
-    try:
-        from vertexai.preview.generative_models import CodeExecution
-    except ImportError:
-        # Fallback for very old versions (rare)
-        CodeExecution = None 
-
-# 2. Dynamically find GoogleSearchRetrieval
-try:
-    from vertexai.generative_models import GoogleSearchRetrieval
-except ImportError:
-    try:
-        # Try the preview grounding module
-        from vertexai.preview.generative_models import grounding
-        GoogleSearchRetrieval = grounding.GoogleSearchRetrieval
-    except ImportError:
-        GoogleSearchRetrieval = None
+# --- Vertex AI Imports ---
+from vertexai.generative_models import GenerativeModel, GenerationConfig
+from vertexai.preview.generative_models import grounding
 
 # Initialize Firebase Admin
 try:
@@ -49,8 +25,8 @@ except ValueError:
 SHEET_ID = os.environ.get("SHEET_ID")
 SHEET_RANGE = os.environ.get("SHEET_RANGE", "Sheet1!A:D")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
-REGION = os.environ.get("REGION")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-1.5-pro-002")
+REGION = os.environ.get("REGION", "us-central1")
+MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-2.0-flash-exp")  # or "gemini-1.5-pro-002"
 
 PROMPT_TEMPLATE = """
 **ROLE:** Ruthless Technical Screener & Resume Auditor.
@@ -121,7 +97,17 @@ def get_model():
     global model
     if model is None:
         vertexai.init(project=PROJECT_ID, location=REGION)
-        model = GenerativeModel(MODEL_NAME)
+        model = GenerativeModel(
+            MODEL_NAME,
+            system_instruction=[
+                "You are a ruthless technical screener and resume auditor. ",
+                "IMPORTANT INSTRUCTIONS:",
+                "1. DATE CHECK: Use Google Search to find 'current date today' and print it at the top of your response.",
+                "2. CALCULATION: Use code execution (Python) for any calculations like years of experience. Do not guess.",
+                "3. EVALUATION: Use the current date as baseline for 'Present' roles.",
+                "4. Use all available tools when needed."
+            ]
+        )
     return model
 
 def get_sheets_service():
@@ -168,81 +154,64 @@ def fetch_resumes_from_sheet(service):
 
 def analyze_with_gemini(jd_text, resumes):
     model_instance = get_model()
-    tools_list = []
 
-    # 1. Define Tools
-    if GoogleSearchRetrieval:
-        search_tool = Tool.from_google_search_retrieval(
-            google_search_retrieval=GoogleSearchRetrieval()
-        )
-        tools_list.append(search_tool)
-    else:
-        logger.warning("GoogleSearchRetrieval not found in this environment.")
-
-    if CodeExecution:
-        code_tool = Tool.from_code_execution(
-            code_execution=CodeExecution()
-        )
-        tools_list.append(code_tool)
-    else:
-        logger.warning("CodeExecution not found in this environment.")
-
-    # 2. Tool Config
-    tool_config = ToolConfig(
-        function_calling_config=ToolConfig.FunctionCallingConfig(
-            mode=ToolConfig.FunctionCallingConfig.Mode.AUTO,
-        )
-    )
-
+    # Build context from resumes
     context_str = ""
     for r in resumes:
         status = "[ARCHIVED]" if r["is_archived"] else "[ACTIVE]"
         context_str += f"\n--- RESUME: {r['name']}, path_to_resume: {r['path']}, {status} ---\n{r['content']}\n"
 
-    system_instruction = (
-        "SYSTEM INSTRUCTION: \n"
-        "1. DATE CHECK: First, use the Google Search tool to find 'current date today'. "
-        "Print this date clearly at the top of your response.\n"
-        "2. CALCULATION: If you need to calculate years of experience (e.g., Jan 2020 to Present), or any other calculations "
-        "use the Code Interpreter (Python) to get the exact duration. Do not guess.\n"
-        "3. EVALUATION: Use the fetched date as the baseline for 'Present' roles.\n"
-        "4. Use the arsenal of tools, don't assume."
-        "---------------------------------------------------\n"
-    )
-
-    full_prompt = system_instruction + PROMPT_TEMPLATE.format(jd_text=jd_text, context_str=context_str)
+    full_prompt = PROMPT_TEMPLATE.format(jd_text=jd_text, context_str=context_str)
     
-    # --- FIX: Changed from logger.log to logger.info and used f-string ---
-    logger.info(f"Prompt length: {len(full_prompt)}") 
+    logger.info(f"Prompt length: {len(full_prompt)} characters")
 
     try:
-        # 4. Generate with Tools
+        # Configure tools via generation config
+        generation_config = GenerationConfig(
+            temperature=0.2,  # Lower temperature for more consistent analysis
+            top_p=0.95,
+            top_k=40,
+            max_output_tokens=8192,
+        )
+
+        # Enable Google Search grounding
+        google_search_tool = grounding.GoogleSearch()
+
+        # Generate with tools
         response = model_instance.generate_content(
             full_prompt,
-            tools=tools_list,
-            tool_config=tool_config,
+            tools=[google_search_tool],
+            generation_config=generation_config,
         )
         
-        # Safety check for text content
+        # Safety and content checks
         if not response.candidates:
+            logger.error("No candidates returned from Gemini")
             return "Error: No candidates returned from Gemini."
         
-        # Check if the model blocked the response (safety filters)
-        if response.prompt_feedback.block_reason:
-             return f"Blocked: {response.prompt_feedback.block_reason}"
+        # Check for blocking
+        if hasattr(response, 'prompt_feedback') and response.prompt_feedback.block_reason:
+            block_reason = response.prompt_feedback.block_reason
+            logger.error(f"Response blocked: {block_reason}")
+            return f"Error: Response blocked due to {block_reason}"
 
-        # Return the text from the first part of the first candidate
+        # Extract text response
         try:
             return response.text
-        except ValueError:
-            # Sometimes response.text fails if there are multiple parts (text + function call)
-            # We try to grab the first text part manually
-            parts = response.candidates[0].content.parts
-            text_content = [p.text for p in parts if p.text]
-            return "\n".join(text_content) if text_content else "Error: Model executed a tool but returned no text."
+        except ValueError as e:
+            logger.warning(f"Could not extract text directly: {e}")
+            # Try to extract from parts
+            if response.candidates and response.candidates[0].content.parts:
+                parts = response.candidates[0].content.parts
+                text_parts = [part.text for part in parts if hasattr(part, 'text') and part.text]
+                if text_parts:
+                    return "\n".join(text_parts)
+            
+            logger.error("No text content available in response")
+            return "Error: Model returned no text content. This may be due to safety filters or tool execution."
 
     except Exception as e:
-        logger.error(f"AI Error: {e}")
+        logger.exception("Error during Gemini generation")
         return f"Error generating content: {str(e)}"
 
 # --- HTML TEMPLATES ---
@@ -253,16 +222,17 @@ HTML_FORM = """
     <title>JD Screener Bot</title>
     <style>
         body { font-family: sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
-        textarea { width: 100%; height: 200px; padding: 10px; }
-        button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
+        textarea { width: 100%; height: 200px; padding: 10px; font-family: monospace; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; margin-top: 10px; }
         button:hover { background: #0056b3; }
+        label { font-weight: bold; }
     </style>
 </head>
 <body>
-    <h1>Resume Screener (Gen 2)</h1>
+    <h1>Resume Screener (Gen 2.5)</h1>
     <form action="/" method="post">
         <label for="jd">Paste Job Description (JD):</label><br>
-        <textarea id="jd" name="jd" required placeholder="Paste the JD here..."></textarea><br><br>
+        <textarea id="jd" name="jd" required placeholder="Paste the JD here..."></textarea><br>
         <button type="submit">Analyze Resumes</button>
     </form>
 </body>
@@ -281,11 +251,11 @@ def handle_chat(request):
         return ("", 204, headers)
     
     if request.method == "GET":
-        return (HTML_FORM, 200)
+        return (HTML_FORM, 200, headers)
     
     if request.method == "POST":
         try:
-            # Optional: Enforce auth if needed, currently permissive for testing
+            # Optional: Enforce auth if needed
             # user = verify_firebase_token(request)
             # if not user:
             #     return (jsonify({"error": "Unauthorized"}), 401, headers)
@@ -310,9 +280,28 @@ def handle_chat(request):
             if is_json:
                 return (jsonify({"markdown": markdown_result}), 200, headers)
             else:
-                # Basic HTML output wrapper
-                return (f"<html><body><pre style='white-space: pre-wrap;'>{markdown_result}</pre></body></html>", 200, headers)
+                # HTML output with better formatting
+                html_output = f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Analysis Result</title>
+                    <style>
+                        body {{ font-family: sans-serif; padding: 20px; max-width: 1000px; margin: 0 auto; }}
+                        pre {{ white-space: pre-wrap; background: #f5f5f5; padding: 20px; border-radius: 5px; }}
+                        a {{ display: inline-block; margin-top: 20px; color: #007bff; }}
+                    </style>
+                </head>
+                <body>
+                    <h1>Analysis Result</h1>
+                    <pre>{markdown_result}</pre>
+                    <a href="/">← Back to Form</a>
+                </body>
+                </html>
+                """
+                return (html_output, 200, headers)
 
         except Exception as e:
-            logger.exception("System Error")
-            return (f"System Error: {str(e)}", 500, headers)
+            logger.exception("System Error in request handler")
+            error_msg = f"System Error: {str(e)}"
+            return (error_msg, 500, headers)
