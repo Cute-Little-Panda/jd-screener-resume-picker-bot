@@ -27,7 +27,6 @@ SHEET_RANGE = os.environ.get("SHEET_RANGE", "Sheet1!A:D")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 REGION = os.environ.get("REGION", "us-central1")
 MODEL_NAME = os.environ.get("MODEL_NAME", "gemini-1.5-pro-002")  # Changed to more stable model
-X_INTERNAL_SECRET = os.environ.get("X_INTERNAL_SECRET")
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -344,11 +343,6 @@ def handle_chat(request):
         return (jsonify({"error": "Method not allowed. Use POST."}), 405, headers)
     
     try:
-        # Reject anything that isn't from our own proxy before doing any real work
-        if not X_INTERNAL_SECRET or request.headers.get("X-Internal-Secret") != X_INTERNAL_SECRET:
-            logger.warning("Rejected request missing/invalid internal secret")
-            return (jsonify({"error": "Unauthorized."}), 401, headers)
-
         # Verify Firebase authentication
         user = verify_firebase_token(request)
         if not user:
