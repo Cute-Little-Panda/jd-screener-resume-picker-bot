@@ -46,10 +46,11 @@ jobs:
           entry_point: "handle_chat"
           memory: "1Gi"
           service_timeout: 540
-          min_instance_count: 1
+          min_instance_count: 0
           max_instance_count: 1
           service_account: "${{ env.SERVICE_ACCOUNT }}"
           environment_variables: |-
             SHEET_ID=${{ vars.SHEET_ID }}
             GCP_PROJECT_ID=${{ env.PROJECT_ID }}
             MODEL_NAME=${{ vars.MODEL_NAME }}
+            X_INTERNAL_SECRET=${{ secrets.X_INTERNAL_SECRET }}
